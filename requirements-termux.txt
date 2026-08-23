@@ -1,0 +1,15 @@
+# NEXA Factory has ZERO external pip dependencies.
+#
+# Every previously-external library was replaced with a Python standard
+# library equivalent specifically because pip installs of C-extension /
+# non-pure-Python packages routinely fail or hang on Termux (Android's
+# Bionic libc is incompatible with PyPI's pre-built glibc wheels, so pip
+# falls back to compiling from source).
+#
+#   httpx       -> urllib.request  (telegram_adapter.py)
+#   aiosqlite   -> sqlite3         (asqlite.py, wraps stdlib sqlite3)
+#   openpyxl    -> csv + zipfile   (backup.py - backups are now .zip of .csv)
+#   python-dotenv -> manual .env parser (config.py)
+#
+# This file is kept only so `pip install -r requirements-termux.txt` is a
+# harmless no-op if something still runs it. Nothing needs to be installed.
