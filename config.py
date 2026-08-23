@@ -50,3 +50,9 @@ MEMORY_THRESHOLD_MB = int(os.getenv("MEMORY_THRESHOLD_MB", "300"))
 # prefix of any Telegram bot token, before the ':'.
 FACTORY_BOT_TOKEN = os.getenv("FACTORY_BOT_TOKEN", "").strip()
 FACTORY_BOT_ID = int(FACTORY_BOT_TOKEN.split(":")[0]) if ":" in FACTORY_BOT_TOKEN else None
+
+# Human operator allowed to access the factory admin panel. Keep the
+# FACTORY_ADMIN_ID fallback for older deployments that used that name.
+_admin_id = os.getenv("ADMIN_ID", os.getenv("FACTORY_ADMIN_ID", "")).strip()
+ADMIN_ID = int(_admin_id) if _admin_id.isdigit() else None
+FACTORY_ADMIN_ID = ADMIN_ID
