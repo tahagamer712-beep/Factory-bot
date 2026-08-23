@@ -392,31 +392,31 @@ def confirm_cancel(confirm_data: str, cancel_data: str) -> Dict:
 # These render for regular bot users, not the admin - callback_data uses a
 # "vfy:" prefix so dispatcher routes them outside the admin-only "adm:" path.
 
-def verify_direct_kb() -> Dict:
-    return _kb([[_btn("✅ متابعة", "vfy:direct")]])
+def verify_direct_kb(user_id: int) -> Dict:
+    return _kb([[_btn("✅ متابعة", f"vfy:direct:{user_id}")]])
 
 
-def verify_captcha_kb(options: list, correct_index: int) -> Dict:
+def verify_captcha_kb(options: list, correct_index: int, user_id: int) -> Dict:
     import random
     indexed = list(enumerate(options))
     random.shuffle(indexed)
-    row = [_btn(str(val), f"vfy:captcha:{1 if i == correct_index else 0}") for i, val in indexed]
+    row = [_btn(str(val), f"vfy:captcha:{1 if i == correct_index else 0}:{user_id}") for i, val in indexed]
     return _kb([row])
 
 
-def verify_visit_kb(url: str) -> Dict:
+def verify_visit_kb(url: str, user_id: int) -> Dict:
     return _kb([
         [_btn("🌐 زيارة الموقع", url=url)],
-        [_btn("✅ تحقق", "vfy:visit_confirm")],
+        [_btn("✅ تحقق", f"vfy:visit_confirm:{user_id}")],
     ])
 
 
-def verify_link_kb() -> Dict:
-    return _kb([[_btn("❌ إلغاء", "vfy:cancel")]])
+def verify_link_kb(user_id: int) -> Dict:
+    return _kb([[_btn("❌ إلغاء", f"vfy:cancel:{user_id}")]])
 
 
-def verify_manual_pending_kb() -> Dict:
-    return _kb([[_btn("🔄 تحقق من الحالة", "vfy:manual_check")]])
+def verify_manual_pending_kb(user_id: int) -> Dict:
+    return _kb([[_btn("🔄 تحقق من الحالة", f"vfy:manual_check:{user_id}")]])
 
 
 def verify_manual_admin_kb(bot_id: int, chat_id: int) -> Dict:
@@ -428,7 +428,7 @@ def verify_manual_admin_kb(bot_id: int, chat_id: int) -> Dict:
 
 # ------------------------------------------------ subscription gate (end users) --
 
-def sub_gate_kb(channels: list, check_text: str = "✅ تحقق", invite_links: dict = None) -> Dict:
+def sub_gate_kb(channels: list, check_text: str = "✅ تحقق", invite_links: dict = None, user_id: int = None) -> Dict:
     invite_links = invite_links or {}
     rows = []
     for ch in channels:
@@ -439,5 +439,5 @@ def sub_gate_kb(channels: list, check_text: str = "✅ تحقق", invite_links: 
         # else: no working join link could be generated (bot isn't admin
         # there, or link creation failed) - still listed in the message
         # text, just without a clickable button.
-    rows.append([_btn(check_text, "chk:sub")])
+    rows.append([_btn(check_text, f"chk:sub:{user_id}")])
     return _kb(rows)
