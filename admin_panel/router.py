@@ -411,7 +411,7 @@ async def handle_callback(bot_id: int, chat_id: int, message_id: int,
         from subscription_handler import subscription_handler
         items = await subscription_handler.get_subscriptions(bot_id)
         channels = [i["channel_id"] for i in items if i["active"]] or ["@مثال_قناة"]
-        gate_text, gate_kb = await subscription_handler.build_gate(bot_id, channels)
+        gate_text, gate_kb = await subscription_handler.build_gate(bot_id, channels, chat_id)
         await message_sender.send_message(bot_id, chat_id, sc.sub_preview_intro(), is_admin_flow=True)
         await message_sender.send_message(bot_id, chat_id, gate_text, reply_markup=gate_kb, is_admin_flow=True)
         return
