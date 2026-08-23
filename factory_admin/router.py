@@ -412,6 +412,8 @@ async def handle_callback(chat_id: int, message_id: int, user_id: int, callback_
         _, _, uid_s, role = rest.split(":")
         uid = int(uid_s)
         await db.set_factory_admin(uid, role, ROLE_DEFAULTS.get(role, []))
+        from command_menu import sync_factory_commands
+        await sync_factory_commands([uid])
         await _edit(chat_id, message_id, sc.admin_added(role), kb.back_only("fadm:admins"))
         return
     
