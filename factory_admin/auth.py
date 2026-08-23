@@ -6,12 +6,14 @@ needs a row in factory_admins."""
 from db import db
 
 ROLE_ALL_PERMISSIONS = [
-    "bots", "owners", "broadcast", "backups", "logs", "system_settings", "delete_bots",
+    "bots", "owners", "stats", "broadcast", "blocks", "subscriptions",
+    "backups", "dbtools", "settings", "logs", "system_settings", "admins",
+    "delete_bots",
 ]
 
 ROLE_DEFAULTS = {
     "owner": ROLE_ALL_PERMISSIONS,
-    "admin": ["bots", "owners", "broadcast", "logs"],
+    "admin": ["bots", "owners", "stats", "broadcast", "logs"],
     "support": ["bots", "owners"],
     "analyst": ["logs"],
 }
