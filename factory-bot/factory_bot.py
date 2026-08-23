@@ -159,7 +159,7 @@ async def _bot_info_text_kb(bot_id: int, owner_id: int):
 
 # --------------------------------------------------------------- entry ----
 
-async def handle_message(chat_id: int, user_id: int, text: str):
+async def handle_message(chat_id: int, user_id: int, text: str, username: str = ""):
     from admin_panel.flows import handle_text as admin_flow_handle_text
     from config import FACTORY_BOT_ID
     from factory_admin.auth import is_factory_admin
@@ -198,7 +198,7 @@ async def handle_message(chat_id: int, user_id: int, text: str):
         await _process_token_submission(chat_id, user_id, text.strip())
         return
     
-    is_new = await db.add_factory_user(chat_id, "", "")
+    is_new = await db.add_factory_user(chat_id, username, "")
     
     if text.strip() == "/start":
         await db.clear_conversation_state(chat_id)
