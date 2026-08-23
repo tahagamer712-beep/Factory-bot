@@ -10,6 +10,15 @@ from .auth import is_factory_admin, has_permission, get_role, ROLE_DEFAULTS
 
 PAGE_SIZE = 8
 
+def _permission_for_action(rest: str):
+    section = rest.split(":", 1)[0]
+    return {
+        "bots": "bots", "owners": "owners", "stats": "stats",
+        "bcast": "broadcast", "blocks": "blocks", "sub": "subscriptions",
+        "backup": "backups", "dbtools": "dbtools", "settings": "settings",
+        "system": "system_settings", "logs": "logs", "admins": "admins",
+    }.get(section)
+
 
 async def _send(chat_id: int, text: str, reply_markup=None):
     from config import FACTORY_BOT_ID
@@ -111,12 +120,13 @@ async def handle_callback(chat_id: int, message_id: int, user_id: int, callback_
     if not data.startswith("fadm:"):
         return
     rest = data[len("fadm:"):]
+    permission = _permission_for_action(rest)
+    if permission and not await has_permission(user_id, permission):
+        return
     
     # ---- bots ----
     if rest.startswith("bots:list:"):
         offset = int(rest.split(":")[-1])
-        if not await has_permission(user_id, "bots"):
-            return
         total = await db.count_all_bots()
         bots = await db.list_all_bots(limit=PAGE_SIZE, offset=offset)
         await _edit(chat_id, message_id, sc.bots_menu(total), kb.bots_list_kb(bots, offset, total, PAGE_SIZE))
@@ -187,8 +197,6 @@ async def handle_callback(chat_id: int, message_id: int, user_id: int, callback_
     # ---- broadcast ----
     if rest.startswith("bcast:aud:"):
         audience = rest.split(":")[-1]
-        if not await has_permission(user_id, "broadcast"):
-            return
         await db.set_conversation_state(chat_id, FACTORY_BOT_ID, "fadm_bcast_text", {"audience": audience})
         await _send(chat_id, sc.bcast_prompt())
         return
@@ -283,11 +291,17 @@ async def handle_callback(chat_id: int, message_id: int, user_id: int, callback_
         action, sub_id = parts[1], int(parts[2])
         if action == "toggle":
             async with db._lock:
-                await db.connection.execute("UPDATE subscriptions SET active = NOT active WHERE id = ?", (sub_id,))
+                await db.connection.execute(
+                    "UPDATE subscriptions SET active = NOT active WHERE id = ? AND bot_id = ?",
+                    (sub_id, FACTORY_BOT_ID),
+                )
                 await db.connection.commit()
         elif action == "del":
             async with db._lock:
-                await db.connection.execute("DELETE FROM subscriptions WHERE id = ?", (sub_id,))
+                await db.connection.execute(
+                    "DELETE FROM subscriptions WHERE id = ? AND bot_id = ?",
+                    (sub_id, FACTORY_BOT_ID),
+                )
                 await db.connection.commit()
         elif action == "item":
             from subscription_handler import subscription_handler
