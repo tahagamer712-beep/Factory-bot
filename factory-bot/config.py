@@ -51,8 +51,8 @@ MEMORY_THRESHOLD_MB = int(os.getenv("MEMORY_THRESHOLD_MB", "300"))
 FACTORY_BOT_TOKEN = os.getenv("FACTORY_BOT_TOKEN", "").strip()
 FACTORY_BOT_ID = int(FACTORY_BOT_TOKEN.split(":")[0]) if ":" in FACTORY_BOT_TOKEN else None
 
-# Telegram user ID allowed to access the factory-level admin panel.  The
-# master bot ID remains the implicit owner for backwards compatibility, while
-# this setting lets the human operator manage the factory from their account.
-_factory_admin_id = os.getenv("FACTORY_ADMIN_ID", "").strip()
-FACTORY_ADMIN_ID = int(_factory_admin_id) if _factory_admin_id.isdigit() else None
+# Telegram user ID allowed to access the factory-level admin panel. ADMIN_ID
+# is the current name; FACTORY_ADMIN_ID remains supported for old installs.
+_admin_id = os.getenv("ADMIN_ID", os.getenv("FACTORY_ADMIN_ID", "")).strip()
+ADMIN_ID = int(_admin_id) if _admin_id.isdigit() else None
+FACTORY_ADMIN_ID = ADMIN_ID
