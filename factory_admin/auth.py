@@ -20,23 +20,23 @@ ROLE_DEFAULTS = {
 
 
 async def is_factory_admin(user_id: int) -> bool:
-    from config import FACTORY_BOT_ID
-    if FACTORY_BOT_ID is not None and user_id == FACTORY_BOT_ID:
+    from config import ADMIN_ID, FACTORY_BOT_ID
+    if user_id in {ADMIN_ID, FACTORY_BOT_ID} - {None}:
         return True
     return await db.get_factory_admin(user_id) is not None
 
 
 async def get_role(user_id: int) -> str:
-    from config import FACTORY_BOT_ID
-    if FACTORY_BOT_ID is not None and user_id == FACTORY_BOT_ID:
+    from config import ADMIN_ID, FACTORY_BOT_ID
+    if user_id in {ADMIN_ID, FACTORY_BOT_ID} - {None}:
         return "owner"
     admin = await db.get_factory_admin(user_id)
     return admin["role"] if admin else "none"
 
 
 async def has_permission(user_id: int, permission: str) -> bool:
-    from config import FACTORY_BOT_ID
-    if FACTORY_BOT_ID is not None and user_id == FACTORY_BOT_ID:
+    from config import ADMIN_ID, FACTORY_BOT_ID
+    if user_id in {ADMIN_ID, FACTORY_BOT_ID} - {None}:
         return True  # factory owner can do everything, always
     admin = await db.get_factory_admin(user_id)
     if not admin:
