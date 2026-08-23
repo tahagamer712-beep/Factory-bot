@@ -83,20 +83,20 @@ class Dispatcher:
             import verification
             
             if has_contact:
-                if await verification.handle_contact(bot_id, chat_id):
+                if await verification.handle_contact(bot_id, chat_id, user_id):
                     return
             
             if await verification.is_gated(bot_id, chat_id):
-                if await verification.handle_text(bot_id, chat_id, text):
+                if await verification.handle_text(bot_id, chat_id, text, user_id):
                     return
-                await verification.start_challenge(bot_id, chat_id, username, first_name)
+                await verification.start_challenge(bot_id, chat_id, username, first_name, user_id)
                 return
         
         # Subscription gate (skips for admins too - check_subscription is
         # only ever reached here for non-admins since admins return above
         # unless their message fell through, in which case treat them the
         # same as anyone else for subscription purposes)
-        is_subscribed = await subscription_handler.check_subscription(bot_id, chat_id)
+        is_subscribed = await subscription_handler.check_subscription(bot_id, chat_id, user_id=user_id)
         if not is_subscribed:
             print(f"⚠️ Bot #{bot_id} | User {chat_id} missing subscription")
             return
@@ -192,10 +192,10 @@ class Dispatcher:
             return
         
         if callback_data.startswith("chk:") and isinstance(chat_id, int):
-            await self._handle_check_callback(bot_id, chat_id, callback_id, callback_data)
+            await self._handle_check_callback(bot_id, chat_id, user_id, callback_id, callback_data)
             return
     
-    async def _handle_check_callback(self, bot_id: int, chat_id: int, callback_id: str, data: str):
+    async def _handle_check_callback(self, bot_id: int, chat_id: int, user_id: int, callback_id: str, data: str):
         """"chk:sub" - the "✅ تحقق" button on the subscription gate."""
         from bot_registry import bot_registry
         from telegram_adapter import telegram_pool
@@ -204,8 +204,13 @@ class Dispatcher:
             adapter = await telegram_pool.get_adapter(bot["token"])
             await adapter.answer_callback_query(callback_id)
         
-        if data == "chk:sub":
-            fully_subscribed = await subscription_handler.check_subscription(bot_id, chat_id, send_prompt=False)
+        parts = data.split(":")
+        if len(parts) != 3 or parts[0:2] != ["chk", "sub"] or parts[2] != str(user_id):
+            return
+        if data.startswith("chk:sub:"):
+            fully_subscribed = await subscription_handler.check_subscription(
+                bot_id, chat_id, send_prompt=False, user_id=user_id
+            )
             if fully_subscribed:
                 from message_sender import message_sender
                 await message_sender.send_message(bot_id, chat_id, "✅ تم! اكتب /start للمتابعة")
