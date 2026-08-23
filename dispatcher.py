@@ -66,6 +66,10 @@ class Dispatcher:
                 await db.clear_conversation_state(chat_id)
                 await router.send_screen(bot_id, chat_id, "main")
                 return
+            if text.strip() in ("/admin", "/help"):
+                # /admin belongs to the factory only. Created bots expose
+                # no help command, including to their administrators.
+                return
             
             # A reply to a forwarded user message (ban/quick-reply/freeform/media)
             import forwarding
@@ -81,6 +85,13 @@ class Dispatcher:
         else:
             # ---- regular (non-admin) user path ----
             import verification
+
+            # The created-bot public surface intentionally has no /help or
+            # /stats commands. Those are admin-only capabilities; silently
+            # ignore them for regular users instead of exposing the old
+            # generic help text and statistics.
+            if text.strip() and text.split()[0].lower() in ("/admin", "/help", "/stats"):
+                return
             
             if has_contact:
                 if await verification.handle_contact(bot_id, chat_id, user_id):
