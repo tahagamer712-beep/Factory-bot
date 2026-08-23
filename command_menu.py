@@ -55,10 +55,12 @@ async def sync_created_bot_commands(bot_id: int):
 
 async def sync_all_commands():
     """Refresh menus for the factory and every registered created bot."""
-    from config import FACTORY_BOT_ID
+    from config import ADMIN_ID, FACTORY_BOT_ID
 
     admin_rows = await db.list_factory_admins()
     admin_ids = [row["user_id"] for row in admin_rows]
+    if ADMIN_ID is not None:
+        admin_ids.append(ADMIN_ID)
     if FACTORY_BOT_ID is not None:
         await sync_factory_commands(admin_ids)
 
