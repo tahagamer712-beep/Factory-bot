@@ -169,7 +169,7 @@ async def handle_message(chat_id: int, user_id: int, text: str):
             await db.clear_conversation_state(chat_id)
             await fa_router.send_screen(chat_id, "main")
             return
-        if await fa_flows.handle_text(chat_id, text):
+        if await fa_flows.handle_text(chat_id, text, user_id):
             return
     
     # Factory-wide block check (regular users only)
@@ -192,7 +192,7 @@ async def handle_message(chat_id: int, user_id: int, text: str):
         await db.clear_conversation_state(chat_id)
         # Factory-wide mandatory subscription applies here too
         from subscription_handler import subscription_handler
-        if not await subscription_handler.check_subscription(FACTORY_BOT_ID, chat_id):
+        if not await subscription_handler.check_subscription(FACTORY_BOT_ID, chat_id, user_id=user_id):
             return
         await _send(chat_id, WELCOME_TEXT, main_menu_kb())
         return
