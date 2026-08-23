@@ -11,7 +11,7 @@ DEFAULT_GATE_TEXT = "⚠️ يجب الاشتراك بالقنوات التال�
 class SubscriptionHandler:
     """Handle mandatory channel subscriptions"""
     
-    async def check_subscription(self, bot_id: int, chat_id: int, send_prompt: bool = True) -> bool:
+    async def check_subscription(self, bot_id: int, chat_id: int, send_prompt: bool = True, user_id: int = None) -> bool:
         """
         Check if user is subscribed to ALL mandatory channels. If not, and
         send_prompt is True, sends one gate message listing every channel
@@ -20,14 +20,15 @@ class SubscriptionHandler:
         Returns:
             True if subscribed to all, False if missing any
         """
-        missing = await self._get_missing_channels(bot_id, chat_id)
+        subject_id = user_id if isinstance(user_id, int) else chat_id
+        missing = await self._get_missing_channels(bot_id, subject_id)
         if missing is None:
             return True  # no mandatory channels configured
         if not missing:
             return True
         
         if send_prompt:
-            await self._send_gate(bot_id, chat_id, missing)
+            await self._send_gate(bot_id, chat_id, missing, subject_id)
         return False
     
     async def _get_missing_channels(self, bot_id: int, chat_id: int) -> Optional[List[str]]:
@@ -101,7 +102,7 @@ class SubscriptionHandler:
             print(f"❌ Network error checking subscription: {e}")
             return False
     
-    async def build_gate(self, bot_id: int, channels: List[str]) -> Tuple[str, dict]:
+    async def build_gate(self, bot_id: int, channels: List[str], user_id: int = None) -> Tuple[str, dict]:
         """Build the gate message text + inline keyboard - shared by the
         real prompt and the admin's "🎭 معاينة البوابة" preview so they're
         guaranteed to look identical."""
@@ -115,7 +116,7 @@ class SubscriptionHandler:
         text = f"{header}\n\n{channel_lines}"
         
         invite_links = await self._get_invite_links(bot_id, channels)
-        keyboard = kb.sub_gate_kb(channels, check_text, invite_links)
+        keyboard = kb.sub_gate_kb(channels, check_text, invite_links, user_id)
         return text, keyboard
     
     async def _get_invite_links(self, bot_id: int, channels: List[str]) -> dict:
@@ -149,8 +150,8 @@ class SubscriptionHandler:
             # a button for that one - honest fallback, not a crash.
         return links
     
-    async def _send_gate(self, bot_id: int, chat_id: int, channels: List[str]):
-        text, keyboard = await self.build_gate(bot_id, channels)
+    async def _send_gate(self, bot_id: int, chat_id: int, channels: List[str], user_id: int):
+        text, keyboard = await self.build_gate(bot_id, channels, user_id)
         await job_queue.add_job(
             f"subscription_{bot_id}_{chat_id}",
             JobPriority.HIGH,
