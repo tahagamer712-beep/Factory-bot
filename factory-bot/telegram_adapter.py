@@ -21,7 +21,6 @@ import ssl
 import urllib.request
 import urllib.error
 import asyncio
-from pathlib import Path
 from typing import Dict, Optional
 
 
@@ -116,66 +115,6 @@ class TelegramAdapter:
             timeout=timeout + 10.0,
             raise_on_connection_error=True,  # let the poller's retry/backoff handle it
         )
-
-    def _post_multipart_sync(self, url: str, fields: dict, file_field: str,
-                             file_path: str, timeout: float):
-        boundary = f"----NexaFactory{__import__('uuid').uuid4().hex}"
-        chunks = []
-        for name, value in fields.items():
-            chunks.extend([
-                f"--{boundary}\r\n".encode(),
-                f'Content-Disposition: form-data; name="{name}"\r\n\r\n'.encode(),
-                str(value).encode("utf-8"),
-                b"\r\n",
-            ])
-        filename = Path(file_path).name
-        file_bytes = Path(file_path).read_bytes()
-        chunks.extend([
-            f"--{boundary}\r\n".encode(),
-            f'Content-Disposition: form-data; name="{file_field}"; filename="{filename}"\r\n'.encode(),
-            b"Content-Type: application/zip\r\n\r\n",
-            file_bytes,
-            b"\r\n",
-            f"--{boundary}--\r\n".encode(),
-        ])
-        req = urllib.request.Request(
-            url,
-            data=b"".join(chunks),
-            headers={"Content-Type": f"multipart/form-data; boundary={boundary}"},
-            method="POST",
-        )
-        with urllib.request.urlopen(req, timeout=timeout, context=self._ssl_context) as resp:
-            return resp.status, resp.read()
-
-    async def send_document(self, chat_id: int, file_path: str,
-                            caption: str = "", parse_mode: str = "HTML") -> Dict:
-        """Upload a local file to Telegram as a document."""
-        try:
-            status, body = await asyncio.to_thread(
-                self._post_multipart_sync,
-                self._get_url("sendDocument"),
-                {"chat_id": chat_id, "caption": caption, "parse_mode": parse_mode},
-                "document",
-                file_path,
-                self.timeout,
-            )
-            try:
-                return json.loads(body)
-            except json.JSONDecodeError:
-                return {"ok": False, "error": f"invalid_json_response (status {status})"}
-        except socket.timeout:
-            return {"ok": False, "error": "timeout"}
-        except urllib.error.HTTPError as e:
-            try:
-                parsed = json.loads(e.read())
-                parsed.setdefault("ok", False)
-                return parsed
-            except Exception:
-                return {"ok": False, "error_code": e.code, "description": str(e)}
-        except urllib.error.URLError as e:
-            return {"ok": False, "error": f"connection_error: {e.reason}"}
-        except OSError as e:
-            return {"ok": False, "error": f"file_or_connection_error: {e}"}
     
     async def send_message(self, chat_id: int, text: str, parse_mode: str = "HTML",
                            reply_markup: Optional[dict] = None,
@@ -265,10 +204,13 @@ class TelegramAdapter:
             timeout=self.timeout,
         )
     
-    async def set_my_commands(self, commands: list) -> Dict:
+    async def set_my_commands(self, commands: list, scope: Optional[dict] = None) -> Dict:
         """Register the bot's `/` command list (the "الاختصارات" feature).
         `commands` is a list of {"command": "...", "description": "..."}."""
-        return await self._post("setMyCommands", {"commands": commands}, timeout=self.timeout)
+        payload = {"commands": commands}
+        if scope is not None:
+            payload["scope"] = scope
+        return await self._post("setMyCommands", payload, timeout=self.timeout)
     
     async def get_chat_member(self, chat_id, user_id: int) -> Dict:
         """Get a user's membership status in a chat/channel"""
