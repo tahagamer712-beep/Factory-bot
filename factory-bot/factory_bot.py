@@ -57,6 +57,14 @@ HOW_TO_MAKE_BOT = (
 
 PAID_VERSION = "⭐ <b>النسخة المدفوعة</b>\n\n🚧 قيد التطوير حالياً."
 
+FACTORY_HELP_TEXT = (
+    "📖 <b>مساعدة المصنع</b>\n\n"
+    "المصنع يساعدك على إنشاء وإدارة بوتات تيليجرام بسهولة.\n"
+    "استخدم «صنع بوت جديد» وأرسل توكن البوت من @BotFather، "
+    "وسيبدأ بوتك بالعمل مباشرة.\n\n"
+    "للبداية أرسل /start."
+)
+
 
 def _kb(rows):
     return {"inline_keyboard": rows}
@@ -71,16 +79,13 @@ def _btn(text, data=None, url=None):
     return b
 
 
-def main_menu_kb(show_admin=False):
-    rows = [
+def main_menu_kb():
+    return _kb([
         [_btn("🤖 صنع بوت جديد", "fac:new")],
         [_btn("📋 قائمه بوتاتك", "fac:list")],
         [_btn("❓ كيف اصنع بوت؟", "fac:help")],
         [_btn("⭐ النسخة المدفوعة", "fac:paid")],
-    ]
-    if show_admin:
-        rows.insert(0, [_btn("🏭 لوحة إدارة المصنع", "fadm:main")])
-    return _kb(rows)
+    ])
 
 
 def new_bot_kb():
@@ -159,7 +164,7 @@ async def _bot_info_text_kb(bot_id: int, owner_id: int):
 
 # --------------------------------------------------------------- entry ----
 
-async def handle_message(chat_id: int, user_id: int, text: str, username: str = ""):
+async def handle_message(chat_id: int, user_id: int, text: str):
     from admin_panel.flows import handle_text as admin_flow_handle_text
     from config import FACTORY_BOT_ID
     from factory_admin.auth import is_factory_admin
@@ -168,9 +173,17 @@ async def handle_message(chat_id: int, user_id: int, text: str, username: str = 
     if await is_factory_admin(user_id):
         import factory_admin.flows as fa_flows
         import factory_admin.router as fa_router
-        if text.strip() in {"/start", "/admin", "/panel"}:
+        if text.strip() == "/start":
+            await db.clear_conversation_state(chat_id)
+            await _send(chat_id, WELCOME_TEXT, main_menu_kb())
+            await fa_router.send_screen(chat_id, "main")
+            return
+        if text.strip() == "/admin":
             await db.clear_conversation_state(chat_id)
             await fa_router.send_screen(chat_id, "main")
+            return
+        if text.strip() == "/help":
+            await _send(chat_id, FACTORY_HELP_TEXT)
             return
         if await fa_flows.handle_text(chat_id, text, user_id):
             return
@@ -180,13 +193,9 @@ async def handle_message(chat_id: int, user_id: int, text: str, username: str = 
     if block and block.get("block_factory_use"):
         return
 
-    if text.strip() in {"/admin", "/panel"}:
-        await _send(
-            chat_id,
-            "⛔ ما عندك صلاحية لوحة إدارة المصنع.\n"
-            "تأكد أن FACTORY_ADMIN_ID هو رقم حسابك الشخصي في تيليجرام، وليس رقم البوت.",
-            main_menu_kb(),
-        )
+    # /admin is reserved for factory admins and must not reveal anything to
+    # regular users.
+    if text.strip() == "/admin":
         return
     
     convo = await db.get_conversation_state(chat_id)
@@ -198,7 +207,7 @@ async def handle_message(chat_id: int, user_id: int, text: str, username: str = 
         await _process_token_submission(chat_id, user_id, text.strip())
         return
     
-    is_new = await db.add_factory_user(chat_id, username, "")
+    is_new = await db.add_factory_user(chat_id, "", "")
     
     if text.strip() == "/start":
         await db.clear_conversation_state(chat_id)
@@ -206,10 +215,14 @@ async def handle_message(chat_id: int, user_id: int, text: str, username: str = 
         from subscription_handler import subscription_handler
         if not await subscription_handler.check_subscription(FACTORY_BOT_ID, chat_id, user_id=user_id):
             return
-        await _send(chat_id, WELCOME_TEXT, main_menu_kb(await is_factory_admin(user_id)))
+        await _send(chat_id, WELCOME_TEXT, main_menu_kb())
+        return
+
+    if text.strip() == "/help":
+        await _send(chat_id, FACTORY_HELP_TEXT)
         return
     
-    await _send(chat_id, WELCOME_TEXT, main_menu_kb(await is_factory_admin(user_id)))
+    await _send(chat_id, WELCOME_TEXT, main_menu_kb())
 
 
 async def _process_token_submission(chat_id: int, user_id: int, token: str):
@@ -266,6 +279,8 @@ async def _process_token_submission(chat_id: int, user_id: int, token: str):
     # Go live immediately - no restart needed
     from poller import poller_supervisor
     await poller_supervisor.add_and_start_poller(new_bot_id, token)
+    from command_menu import sync_created_bot_commands
+    await sync_created_bot_commands(new_bot_id)
     await db.add_log("info", "factory", f"New bot registered: @{bot_username} (#{new_bot_id}) by owner {user_id}")
     
     await _send(
