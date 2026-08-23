@@ -204,10 +204,13 @@ class TelegramAdapter:
             timeout=self.timeout,
         )
     
-    async def set_my_commands(self, commands: list) -> Dict:
+    async def set_my_commands(self, commands: list, scope: Optional[dict] = None) -> Dict:
         """Register the bot's `/` command list (the "الاختصارات" feature).
         `commands` is a list of {"command": "...", "description": "..."}."""
-        return await self._post("setMyCommands", {"commands": commands}, timeout=self.timeout)
+        payload = {"commands": commands}
+        if scope is not None:
+            payload["scope"] = scope
+        return await self._post("setMyCommands", payload, timeout=self.timeout)
     
     async def get_chat_member(self, chat_id, user_id: int) -> Dict:
         """Get a user's membership status in a chat/channel"""
