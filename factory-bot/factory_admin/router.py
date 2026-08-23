@@ -320,16 +320,9 @@ async def handle_callback(chat_id: int, message_id: int, user_id: int, callback_
         await _edit(chat_id, message_id, sc.backup_creating(), None)
         from backup import backup_manager
         path = await backup_manager.create_backup()
-        sent = await message_sender.send_document(
-            FACTORY_BOT_ID,
-            chat_id,
-            path,
-            caption="✅ نسخة احتياطية كاملة من قاعدة بيانات المصنع",
-        )
-        if sent:
-            await _edit(chat_id, message_id, sc.backup_sent(), kb.back_only("fadm:backup"))
-        else:
-            await _send(chat_id, sc.backup_send_failed(), kb.back_only("fadm:backup"))
+        import os
+        size_mb = os.path.getsize(path) / 1024 / 1024
+        await _send(chat_id, sc.backup_done(path, size_mb))
         return
     if rest == "backup:list":
         from backup import backup_manager
@@ -419,6 +412,8 @@ async def handle_callback(chat_id: int, message_id: int, user_id: int, callback_
         _, _, uid_s, role = rest.split(":")
         uid = int(uid_s)
         await db.set_factory_admin(uid, role, ROLE_DEFAULTS.get(role, []))
+        from command_menu import sync_factory_commands
+        await sync_factory_commands([uid])
         await _edit(chat_id, message_id, sc.admin_added(role), kb.back_only("fadm:admins"))
         return
     
