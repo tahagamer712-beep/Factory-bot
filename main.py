@@ -73,6 +73,11 @@ async def main():
             print(f"🏭 Factory bot registered: @{uname}")
         else:
             print(f"❌ FACTORY_BOT_TOKEN is set but invalid: {info}")
+
+    # Keep Telegram's slash-command menu aligned with the public/admin
+    # permissions before pollers start receiving updates.
+    from command_menu import sync_all_commands
+    await sync_all_commands()
     
     # Phase 2: Load offsets
     await offset_manager.load_offsets()
