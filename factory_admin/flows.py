@@ -11,10 +11,22 @@ async def _send(chat_id, text, reply_markup=None):
     return await message_sender.send_message(FACTORY_BOT_ID, chat_id, text, reply_markup=reply_markup, is_admin_flow=True)
 
 
-async def handle_text(chat_id: int, text: str) -> bool:
+async def handle_text(chat_id: int, text: str, user_id: int = None) -> bool:
     convo = await db.get_conversation_state(chat_id)
     if not convo or not convo["state"].startswith("fadm_"):
         return False
+    from .auth import has_permission
+    state_permissions = {
+        "fadm_bots_search": "bots", "fadm_owners_search": "owners",
+        "fadm_owner_msg": "owners", "fadm_bcast_text": "broadcast",
+        "fadm_bcast_confirm": "broadcast", "fadm_sub_add": "subscriptions",
+        "fadm_block_new": "blocks", "fadm_maxbots": "settings",
+        "fadm_bcastlimit": "settings", "fadm_admin_add": "admins",
+    }
+    permission = state_permissions.get(convo["state"])
+    if permission and user_id is not None and not await has_permission(user_id, permission):
+        await db.clear_conversation_state(chat_id)
+        return True
     
     if text.strip() == "/cancel":
         await db.clear_conversation_state(chat_id)
