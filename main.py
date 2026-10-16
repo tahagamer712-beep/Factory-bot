@@ -19,6 +19,7 @@ import scheduler
 # each concurrently-polled bot needs its own OS thread for the duration of
 # its poll. Python's default executor caps out around 32 threads, which
 # would bottleneck well before 100 bots, so we size it explicitly here.
+START_TIME = None  # set in main() for uptime tracking
 MAX_CONCURRENT_BOTS = 200
 
 async def _health_monitor():
@@ -37,6 +38,9 @@ async def _health_monitor():
             print(f"⚠️ health_monitor error: {type(e).__name__}: {e}")
 
 async def main():
+    global START_TIME
+    import time as _time
+    START_TIME = _time.time()
     """Main entry point - Phases 1-6"""
     print("🏭 NEXA Factory Engine - Starting")
     print("=" * 50)
@@ -106,9 +110,32 @@ async def main():
     # Set dispatcher callback for poller
     poller_supervisor.on_update = dispatcher.dispatch
     
-    # Create pollers for all registered bots
+    # Create pollers for all registered bots.
+    # Hardening (2026-10-16): validate each token with getMe first. A provably
+    # invalid token (401) gets its poller skipped with a clear warning instead
+    # of retrying forever. Transient network failures keep the old behavior
+    # (poller retries with backoff).
+    from telegram_adapter import TelegramAdapter
     for bot in bot_registry.list_bots():
-        await poller_supervisor.add_poller(bot['bot_id'], bot['token'])
+        adapter = TelegramAdapter(bot['token'], timeout=10)
+        try:
+            await adapter.init()
+            me = await adapter.get_me()
+        except Exception:
+            me = {"ok": False}
+        finally:
+            try:
+                await adapter.close()
+            except Exception:
+                pass
+        if me.get("ok"):
+            await poller_supervisor.add_poller(bot['bot_id'], bot['token'])
+        elif me.get("error_code") == 401:
+            print(f"⚠️ Skipping poller for bot #{bot['bot_id']} (@{bot.get('username', '?')}): invalid token (401)")
+            await db.add_log("warning", "factory",
+                             f"Skipped poller for bot #{bot['bot_id']}: invalid token (401)")
+        else:
+            await poller_supervisor.add_poller(bot['bot_id'], bot['token'])
     
     # Resume any broadcast that was mid-flight when the process last died
     await broadcast_engine.resume_pending_broadcasts()

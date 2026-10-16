@@ -15,7 +15,8 @@ class MessageSender:
     async def send_message(self, bot_id: int, chat_id: int, text: str, 
                           parse_mode: str = "HTML", reply_markup: Optional[dict] = None,
                           _retry: bool = True, is_start: bool = False,
-                          is_admin_flow: bool = False) -> Optional[dict]:
+                          is_admin_flow: bool = False,
+                          reply_to_message_id: Optional[int] = None) -> Optional[dict]:
         """
         Send message with rate limiting
         
@@ -63,7 +64,8 @@ class MessageSender:
         # Get adapter and send
         adapter = await telegram_pool.get_adapter(bot['token'])
         response = await adapter.send_message(chat_id, text, parse_mode, reply_markup=reply_markup,
-                                               protect_content=protect)
+                                               protect_content=protect,
+                                               reply_to_message_id=reply_to_message_id)
         
         # Handle errors
         if not response.get("ok"):
@@ -78,7 +80,8 @@ class MessageSender:
                 if _retry:
                     await asyncio.sleep(retry_after)
                     return await self.send_message(bot_id, chat_id, text, parse_mode, reply_markup,
-                                                    _retry=False, is_start=is_start, is_admin_flow=is_admin_flow)
+                                                    _retry=False, is_start=is_start, is_admin_flow=is_admin_flow,
+                                                    reply_to_message_id=reply_to_message_id)
                 return None
             
             # 403 = user blocked the bot - mark them so we stop retrying/broadcasting to them

@@ -103,11 +103,26 @@ class BroadcastEngine:
         crash/restart resumes instead of re-sending to already-messaged users.
         """
         
+        try:
+            return await self._run_broadcast(bot_id, text, broadcast_id, batch_size, start_offset)
+        except Exception as e:
+            await db.mark_job_failed(broadcast_id, f"broadcast crashed: {type(e).__name__}: {e}")
+            print(f"❌ Broadcast #{broadcast_id} failed: {e}")
+            raise
+
+    async def _run_broadcast(self, bot_id: int, text: str,
+                             broadcast_id: int, batch_size: int = 1000,
+                             start_offset: int = 0):
         total_sent = 0
         total_failed = 0
+        failed_perm = 0   # permanent (403/400/401): user gone or bad request
+        failed_temp = 0   # transient (429/network/timeout): retried by sender
         start_time = time.time()
-        
+
+        await db.mark_job_started(broadcast_id)
+
         offset = start_offset
+        batch_no = 0
         while True:
             # Bail out early if the broadcast was cancelled mid-run
             cursor = await db.connection.execute(
@@ -132,16 +147,31 @@ class BroadcastEngine:
             
             # Process batch
             for (chat_id,) in batch:
-                result = await message_sender.send_message(
-                    bot_id, chat_id, text
-                )
-                
-                if result:
+                try:
+                    result = await message_sender.send_message(
+                        bot_id, chat_id, text
+                    )
+                except Exception:
+                    result = None
+                if result and result.get("ok"):
                     total_sent += 1
                 else:
                     total_failed += 1
-            
+                    code = (result or {}).get("error_code")
+                    if code in (403, 400, 401, 404):
+                        failed_perm += 1
+                    else:
+                        failed_temp += 1
+
             offset += batch_size
+            batch_no += 1
+
+            # Live progress (every 5 batches) so the panel shows real progress
+            if batch_no % 5 == 0:
+                await db.update_job_progress(broadcast_id, json.dumps({
+                    "text": text, "offset": offset,
+                    "progress": {"sent": total_sent, "failed": total_failed,
+                                 "failed_perm": failed_perm, "failed_temp": failed_temp}}))
             
             # Checkpoint progress so a restart resumes from here, not zero
             checkpoint = json.dumps({"text": text, "offset": offset})
@@ -166,10 +196,14 @@ class BroadcastEngine:
         total_users = total_sent + total_failed
         success_rate = (total_sent / total_users * 100) if total_users > 0 else 0
         
-        # Save broadcast result
+        # Save broadcast result (no claim of exactly-once delivery:
+        # checkpointing minimizes duplicates, Telegram gives no such guarantee)
         stats = {
             "sent": total_sent,
             "failed": total_failed,
+            "failed_perm": failed_perm,
+            "failed_temp": failed_temp,
+            "unconfirmed": failed_temp,
             "blocked": total_blocked,
             "total": total_users,
             "success_rate": success_rate,

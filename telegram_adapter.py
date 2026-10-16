@@ -118,14 +118,18 @@ class TelegramAdapter:
     
     async def send_message(self, chat_id: int, text: str, parse_mode: str = "HTML",
                            reply_markup: Optional[dict] = None,
-                           protect_content: bool = False) -> Dict:
-        """Send message, optionally with an inline keyboard (reply_markup)
-        and/or Telegram's native forward/save protection."""
+                           protect_content: bool = False,
+                           reply_to_message_id: Optional[int] = None) -> Dict:
+        """Send message, optionally with an inline keyboard (reply_markup),
+        Telegram's native forward/save protection, and/or as a reply to
+        another message."""
         payload = {"chat_id": chat_id, "text": text, "parse_mode": parse_mode}
         if reply_markup is not None:
             payload["reply_markup"] = reply_markup
         if protect_content:
             payload["protect_content"] = True
+        if reply_to_message_id is not None:
+            payload["reply_to_message_id"] = reply_to_message_id
         return await self._post("sendMessage", payload, timeout=self.timeout)
     
     async def edit_message_text(self, chat_id: int, message_id: int, text: str,
@@ -179,7 +183,9 @@ class TelegramAdapter:
         )
     
     async def copy_message(self, chat_id: int, from_chat_id: int, message_id: int,
-                           caption: Optional[str] = None) -> Dict:
+                           caption: Optional[str] = None,
+                           reply_markup: Optional[dict] = None,
+                           reply_to_message_id: Optional[int] = None) -> Dict:
         """Copy ANY message type (text, photo, video, document, animation/
         gif, sticker, voice, audio, video note...) into another chat
         without the "Forwarded from" tag - Telegram figures out the
@@ -191,6 +197,10 @@ class TelegramAdapter:
         payload = {"chat_id": chat_id, "from_chat_id": from_chat_id, "message_id": message_id}
         if caption is not None:
             payload["caption"] = caption
+        if reply_markup is not None:
+            payload["reply_markup"] = reply_markup
+        if reply_to_message_id is not None:
+            payload["reply_to_message_id"] = reply_to_message_id
             payload["parse_mode"] = "HTML"
         return await self._post("copyMessage", payload, timeout=self.timeout)
     
@@ -212,6 +222,103 @@ class TelegramAdapter:
             payload["scope"] = scope
         return await self._post("setMyCommands", payload, timeout=self.timeout)
     
+    async def bot_api_call(self, token: str, method: str, params: dict) -> Dict:
+        """Call any Bot API method using a *different* bot token (for managed bots)."""
+        url = f"https://api.telegram.org/bot{token}/{method}"
+        try:
+            status, body = await asyncio.to_thread(self._post_sync, url, params, self.timeout)
+            try:
+                return json.loads(body)
+            except json.JSONDecodeError:
+                return {"ok": False, "error": f"invalid_json_response (status {status})"}
+        except urllib.error.HTTPError as e:
+            try:
+                import json as _json
+                parsed = _json.loads(e.read())
+                parsed.setdefault("ok", False)
+                return parsed
+            except Exception:
+                return {"ok": False, "error_code": e.code, "description": str(e)}
+        except urllib.error.URLError as e:
+            return {"ok": False, "error": f"connection_error: {e.reason}"}
+        except socket.timeout:
+            return {"ok": False, "error": "timeout"}
+
+    async def set_managed_bot_name(self, token: str, name: str) -> Dict:
+        """setMyName for a managed bot (max 64 chars)."""
+        return await self.bot_api_call(token, "setMyName", {"name": name[:64]})
+
+    async def set_managed_bot_description(self, token: str, description: str) -> Dict:
+        """setMyDescription for a managed bot (max 512 chars, shown in profile)."""
+        return await self.bot_api_call(token, "setMyDescription", {"description": description[:512]})
+
+    async def set_managed_bot_short_description(self, token: str, short_description: str) -> Dict:
+        """setMyShortDescription for a managed bot (max 120 chars, shown before chat)."""
+        return await self.bot_api_call(token, "setMyShortDescription", {"short_description": short_description[:120]})
+
+    async def set_managed_bot_photo(self, token: str, photo_bytes: bytes, filename: str = "photo.jpg") -> Dict:
+        """setMyProfilePhoto for a managed bot via multipart upload.
+        Correct format: 'photo' field is a JSON InputProfilePhoto object
+        {"type":"static","photo":"attach://<file_field>"} referencing the file field.
+        """
+        import uuid, json as _json
+        boundary = uuid.uuid4().hex
+        file_field = "photo_file"
+        photo_json = _json.dumps({"type": "static", "photo": f"attach://{file_field}"})
+        body = b""
+        # JSON descriptor field
+        body += f"--{boundary}\r\n".encode()
+        body += b'Content-Disposition: form-data; name="photo"\r\n\r\n'
+        body += photo_json.encode() + b"\r\n"
+        # actual file field
+        body += f"--{boundary}\r\n".encode()
+        body += f'Content-Disposition: form-data; name="{file_field}"; filename="{filename}"\r\n'.encode()
+        body += b"Content-Type: image/jpeg\r\n\r\n"
+        body += photo_bytes + b"\r\n"
+        body += f"--{boundary}--\r\n".encode()
+        url = f"https://api.telegram.org/bot{token}/setMyProfilePhoto"
+        req = urllib.request.Request(
+            url, data=body,
+            headers={"Content-Type": f"multipart/form-data; boundary={boundary}"},
+            method="POST",
+        )
+        try:
+            def _do():
+                with urllib.request.urlopen(req, timeout=self.timeout) as r:
+                    return r.status, r.read().decode("utf-8", "replace")
+            status, resp_body = await asyncio.to_thread(_do)
+            try:
+                return json.loads(resp_body)
+            except json.JSONDecodeError:
+                return {"ok": False, "error": "invalid_json_response"}
+        except urllib.error.HTTPError as e:
+            try:
+                import json as _json
+                parsed = _json.loads(e.read())
+                parsed.setdefault("ok", False)
+                return parsed
+            except Exception:
+                return {"ok": False, "error_code": e.code, "description": str(e)}
+        except Exception as e:
+            return {"ok": False, "error": str(e)[:200]}
+
+    async def download_managed_file(self, token: str, file_id: str) -> bytes | None:
+        """Download a file (e.g. photo) via getFile using a managed bot token."""
+        info = await self.bot_api_call(token, "getFile", {"file_id": file_id})
+        if not info.get("ok"):
+            return None
+        file_path = info.get("result", {}).get("file_path")
+        if not file_path:
+            return None
+        url = f"https://api.telegram.org/file/bot{token}/{file_path}"
+        try:
+            def _dl():
+                with urllib.request.urlopen(url, timeout=self.timeout) as r:
+                    return r.read()
+            return await asyncio.to_thread(_dl)
+        except Exception:
+            return None
+
     async def get_chat_member(self, chat_id, user_id: int) -> Dict:
         """Get a user's membership status in a chat/channel"""
         return await self._post(

@@ -1,5 +1,6 @@
 from db import db
 from typing import Dict, Any
+from message_sender import message_sender
 from message_handler import message_handler
 from subscription_handler import subscription_handler
 
@@ -53,7 +54,15 @@ class Dispatcher:
         if FACTORY_BOT_ID is not None and bot_id == FACTORY_BOT_ID:
             if isinstance(user_id, int):
                 import factory_bot
-                await factory_bot.handle_message(chat_id, user_id, text)
+                photo_file_id = None
+                photos = message.get("photo")
+                if isinstance(photos, list) and photos:
+                    biggest = max(photos, key=lambda p: p.get("file_size", 0))
+                    photo_file_id = biggest.get("file_id")
+                await factory_bot.handle_message(
+                    chat_id, user_id, text,
+                    first_name=first_name, photo_file_id=photo_file_id,
+                )
             return
         
         from admin_panel.auth import is_admin
@@ -76,6 +85,11 @@ class Dispatcher:
             if reply_to_id is not None:
                 if await forwarding.handle_admin_reply(bot_id, chat_id, reply_to_id, message):
                     return
+
+            # Button-triggered reply mode ("ارسال رساله") - next message goes
+            # straight to the target user, no Telegram reply needed.
+            if await forwarding.handle_reply_mode(bot_id, chat_id, message):
+                return
             
             consumed = await flows.handle_text(bot_id, chat_id, text)
             if consumed:
@@ -84,6 +98,13 @@ class Dispatcher:
         
         else:
             # ---- regular (non-admin) user path ----
+            # Phase 2: maintenance mode - admins always keep access
+            _maint = await db.get_setting(bot_id, "maintenance_mode", False)
+            if _maint:
+                _msg = await db.get_setting(bot_id, "maintenance_message", None)
+                _msg = _msg or "\U0001f527 \u0627\u0644\u0628\u0648\u062a \u0642\u064a\u062f \u0627\u0644\u0635\u064a\u0627\u0646\u0629 \u062d\u0627\u0644\u064a\u0627\u064b\u060c \u0646\u0639\u0648\u062f \u0642\u0631\u064a\u0628\u0627\u064b."
+                await message_sender.send_message(bot_id, chat_id, _msg, is_admin_flow=True)
+                return
             import verification
 
             # The created-bot public surface intentionally has no /help or
@@ -192,6 +213,11 @@ class Dispatcher:
                 await factory_bot.handle_callback(chat_id, message_id, user_id, callback_id, callback_data)
             return
         
+        if callback_data.startswith("fwd:") and isinstance(chat_id, int):
+            import forwarding
+            await forwarding.handle_fwd_callback(bot_id, chat_id, user_id, callback_id, callback_data)
+            return
+
         if callback_data.startswith("adm:") and isinstance(chat_id, int) and isinstance(message_id, int):
             from admin_panel import router
             await router.handle_callback(bot_id, chat_id, message_id, callback_id, callback_data, user_id)

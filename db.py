@@ -252,11 +252,96 @@ class Database:
             )
         """)
         
+        # Reports: user reports against other users/content (Phase 1 admin upgrade).
+        # status: new -> reviewing -> closed ; decision: ignored/warned/blocked/escalated
+        await self.connection.execute("""
+            CREATE TABLE IF NOT EXISTS reports (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                bot_id INTEGER NOT NULL,
+                reporter_id INTEGER NOT NULL,
+                target_id INTEGER,
+                reason TEXT,
+                status TEXT DEFAULT 'new',
+                decision TEXT,
+                decided_by INTEGER,
+                decided_at TIMESTAMP,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                FOREIGN KEY (bot_id) REFERENCES bots(bot_id) ON DELETE CASCADE
+            )
+        """)
+        await self.connection.execute(
+            "CREATE INDEX IF NOT EXISTS idx_reports_bot_status ON reports(bot_id, status)")
+
+        # ---- Phase 2: independent admin audit log (append-only, no UI delete) ----
+        await self.connection.execute("""
+            CREATE TABLE IF NOT EXISTS audit_log (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                bot_id INTEGER NOT NULL,
+                admin_id INTEGER NOT NULL,
+                action TEXT NOT NULL,
+                target TEXT,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                success INTEGER DEFAULT 1,
+                reason TEXT,
+                summary TEXT,
+                FOREIGN KEY (bot_id) REFERENCES bots(bot_id) ON DELETE CASCADE
+            )
+        """)
+        await self.connection.execute(
+            "CREATE INDEX IF NOT EXISTS idx_audit_bot_time ON audit_log(bot_id, created_at)")
+
+        # ---- Phase 2: backup history (one row per backup attempt) ----
+        await self.connection.execute("""
+            CREATE TABLE IF NOT EXISTS backups (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                filename TEXT NOT NULL,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                size_bytes INTEGER,
+                integrity_ok INTEGER,
+                scope TEXT,
+                note TEXT
+            )
+        """)
+
+        # ---- Phase 2: granular permissions for extra admins ----
+        # NULL permissions = legacy admin (full access, backward compatible).
+        await self._ensure_column("bot_admins", "permissions", "TEXT")
+
         # Migration: add columns to bot_users that may not exist if this
         # database was created before they were introduced. CREATE TABLE
         # IF NOT EXISTS above only helps brand-new databases.
         await self._ensure_column("bot_users", "chat_type", "TEXT DEFAULT 'private'")
         await self._ensure_column("bot_users", "last_bot_message_id", "INTEGER")
+
+        # ---- Phase 3: alerts (stuck states + health incidents) ----
+        # Append-only incident records. Deduped by (bot_id, alert_type, ref):
+        # re-detection updates last_seen instead of inserting a duplicate.
+        await self.connection.execute("""
+            CREATE TABLE IF NOT EXISTS alerts (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                bot_id INTEGER NOT NULL,
+                alert_type TEXT NOT NULL,
+                severity TEXT NOT NULL DEFAULT 'warning',
+                title TEXT NOT NULL,
+                detail TEXT,
+                ref TEXT,
+                detected_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                last_seen TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                status TEXT NOT NULL DEFAULT 'new',
+                ack_by INTEGER,
+                ack_at TIMESTAMP,
+                resolved_at TIMESTAMP,
+                FOREIGN KEY (bot_id) REFERENCES bots(bot_id) ON DELETE CASCADE
+            )
+        """)
+        await self.connection.execute(
+            "CREATE INDEX IF NOT EXISTS idx_alerts_bot_status ON alerts(bot_id, status)")
+        await self.connection.execute(
+            "CREATE INDEX IF NOT EXISTS idx_alerts_dedupe ON alerts(bot_id, alert_type, ref, status)")
+
+        # ---- Phase 3: job lifecycle timestamps for stuck-job detection ----
+        await self._ensure_column("queue_jobs", "started_at", "TIMESTAMP")
+        await self._ensure_column("queue_jobs", "updated_at", "TIMESTAMP")
         
         # ---- Factory admin panel tables (separate from any single bot) ----
         
@@ -341,6 +426,168 @@ class Database:
         if column not in existing:
             await self.connection.execute(f"ALTER TABLE {table} ADD COLUMN {column} {coltype}")
     
+    # ================= Phase 3: alerts =================
+    async def upsert_alert(self, bot_id: int, alert_type: str, severity: str,
+                           title: str, detail: str = None, ref: str = None) -> int:
+        """Insert a new alert or refresh last_seen of an existing open one.
+        Returns the alert id. Never duplicates an open (bot_id, type, ref)."""
+        if severity not in ("info", "warning", "critical"):
+            severity = "warning"
+        async with self._lock:
+            try:
+                if ref is not None:
+                    cur = await self.connection.execute(
+                        "SELECT id FROM alerts WHERE bot_id = ? AND alert_type = ? "
+                        "AND ref = ? AND status IN ('new','ack')", (bot_id, alert_type, ref))
+                else:
+                    cur = await self.connection.execute(
+                        "SELECT id FROM alerts WHERE bot_id = ? AND alert_type = ? "
+                        "AND ref IS NULL AND status IN ('new','ack')", (bot_id, alert_type))
+                row = await cur.fetchone()
+                if row:
+                    await self.connection.execute(
+                        "UPDATE alerts SET last_seen = CURRENT_TIMESTAMP, severity = ?, "
+                        "title = ?, detail = ? WHERE id = ?",
+                        (severity, self._sanitize_audit_text(title),
+                         self._sanitize_audit_text(detail) if detail else None, row[0]))
+                    await self.connection.commit()
+                    return row[0]
+                cur = await self.connection.execute(
+                    "INSERT INTO alerts (bot_id, alert_type, severity, title, detail, ref) "
+                    "VALUES (?, ?, ?, ?, ?, ?)",
+                    (bot_id, alert_type, severity, self._sanitize_audit_text(title),
+                     self._sanitize_audit_text(detail) if detail else None, ref))
+                await self.connection.commit()
+                return cur.lastrowid
+            except Exception as e:
+                await self.connection.rollback()
+                print(f"Error upserting alert: {e}")
+                return -1
+
+    async def get_alerts(self, bot_id: int, status: str = None, severity: str = None,
+                         limit: int = 20, offset: int = 0) -> list:
+        q = ("SELECT id, alert_type, severity, title, detail, ref, detected_at, "
+             "last_seen, status, ack_by, ack_at FROM alerts WHERE bot_id = ?")
+        params: list = [bot_id]
+        if status:
+            q += " AND status = ?"; params.append(status)
+        if severity:
+            q += " AND severity = ?"; params.append(severity)
+        q += " ORDER BY detected_at DESC LIMIT ? OFFSET ?"
+        params += [limit, offset]
+        cur = await self.connection.execute(q, tuple(params))
+        cols = ["id", "alert_type", "severity", "title", "detail", "ref",
+                "detected_at", "last_seen", "status", "ack_by", "ack_at"]
+        return [dict(zip(cols, r)) for r in await cur.fetchall()]
+
+    async def count_open_alerts(self, bot_id: int) -> dict:
+        cur = await self.connection.execute(
+            "SELECT severity, COUNT(*) FROM alerts WHERE bot_id = ? AND status IN ('new','ack') "
+            "GROUP BY severity", (bot_id,))
+        out = {"critical": 0, "warning": 0, "info": 0}
+        for sev, n in await cur.fetchall():
+            if sev in out:
+                out[sev] = n
+        return out
+
+    async def ack_alert(self, bot_id: int, alert_id: int, admin_id: int) -> bool:
+        async with self._lock:
+            cur = await self.connection.execute(
+                "UPDATE alerts SET status = 'ack', ack_by = ?, ack_at = CURRENT_TIMESTAMP "
+                "WHERE id = ? AND bot_id = ? AND status = 'new'", (admin_id, alert_id, bot_id))
+            await self.connection.commit()
+            return cur.rowcount == 1
+
+    async def resolve_alert(self, bot_id: int, alert_id: int) -> bool:
+        async with self._lock:
+            cur = await self.connection.execute(
+                "UPDATE alerts SET status = 'resolved', resolved_at = CURRENT_TIMESTAMP "
+                "WHERE id = ? AND bot_id = ? AND status IN ('new','ack')", (alert_id, bot_id))
+            await self.connection.commit()
+            return cur.rowcount == 1
+
+    # ================= Phase 3: jobs =================
+    async def count_processing_broadcasts(self, bot_id: int) -> int:
+        cur = await self.connection.execute(
+            "SELECT COUNT(*) FROM queue_jobs WHERE bot_id = ? AND job_type = 'broadcast' "
+            "AND status = 'processing'", (bot_id,))
+        return (await cur.fetchone())[0]
+
+    async def get_broadcast_history(self, bot_id: int, limit: int = 10) -> list:
+        cur = await self.connection.execute(
+            "SELECT job_id, status, data, created_at, started_at, completed_at "
+            "FROM queue_jobs WHERE bot_id = ? AND job_type = 'broadcast' "
+            "ORDER BY job_id DESC LIMIT ?", (bot_id, limit))
+        cols = ["job_id", "status", "data", "created_at", "started_at", "completed_at"]
+        return [dict(zip(cols, r)) for r in await cur.fetchall()]
+
+    async def update_job_progress(self, job_id: int, data: str) -> None:
+        async with self._lock:
+            try:
+                await self.connection.execute(
+                    "UPDATE queue_jobs SET data = ?, updated_at = CURRENT_TIMESTAMP WHERE job_id = ?",
+                    (data, job_id))
+                await self.connection.commit()
+            except Exception as e:
+                await self.connection.rollback()
+                print(f"Error updating job progress: {e}")
+
+    async def mark_job_started(self, job_id: int) -> None:
+        async with self._lock:
+            try:
+                await self.connection.execute(
+                    "UPDATE queue_jobs SET started_at = CURRENT_TIMESTAMP, "
+                    "updated_at = CURRENT_TIMESTAMP WHERE job_id = ?", (job_id,))
+                await self.connection.commit()
+            except Exception as e:
+                await self.connection.rollback()
+                print(f"Error marking job started: {e}")
+
+    async def mark_job_failed(self, job_id: int, error: str) -> None:
+        """Mark a job failed (permanent). Sanitized - never stores secrets."""
+        async with self._lock:
+            try:
+                await self.connection.execute(
+                    "UPDATE queue_jobs SET status = 'failed', completed_at = CURRENT_TIMESTAMP, "
+                    "updated_at = CURRENT_TIMESTAMP, data = ? WHERE job_id = ?",
+                    (self._sanitize_audit_text(error)[:500], job_id))
+                await self.connection.commit()
+            except Exception as e:
+                await self.connection.rollback()
+                print(f"Error marking job failed: {e}")
+
+    async def get_stuck_jobs(self, bot_id: int, timeout_minutes: int = 120) -> list:
+        """Jobs 'processing' with no update for longer than timeout. Evidence-based."""
+        from datetime import datetime, timedelta
+        cutoff = (datetime.now() - timedelta(minutes=timeout_minutes)).isoformat()
+        cur = await self.connection.execute(
+            "SELECT job_id, job_type, created_at, started_at, updated_at FROM queue_jobs "
+            "WHERE bot_id = ? AND status = 'processing' AND "
+            "COALESCE(updated_at, started_at, created_at) < ?",
+            (bot_id, cutoff))
+        cols = ["job_id", "job_type", "created_at", "started_at", "updated_at"]
+        return [dict(zip(cols, r)) for r in await cur.fetchall()]
+
+    # ================= Phase 3: safe log retention =================
+    # Operational logs only. audit_log is append-only and NEVER pruned here.
+    async def prune_old_logs(self, days: int = 30, limit: int = 5000) -> int:
+        """Delete operational logs/events older than `days`, capped at `limit` rows.
+        Returns rows deleted. audit_log is never touched."""
+        from datetime import datetime, timedelta
+        cutoff = (datetime.now() - timedelta(days=days)).isoformat()
+        total = 0
+        async with self._lock:
+            try:
+                for tbl, col in (("logs", "created_at"), ("events", "timestamp")):
+                    cur = await self.connection.execute(
+                        f"DELETE FROM {tbl} WHERE {col} < ? LIMIT {int(limit)}", (cutoff,))
+                    total += cur.rowcount or 0
+                await self.connection.commit()
+            except Exception as e:
+                await self.connection.rollback()
+                print(f"Error pruning logs: {e}")
+        return total
+
     async def add_bot(self, bot_id: int, token: str, owner_id: int, username: str) -> bool:
         """Add new bot to database"""
         # --- input validation ---
@@ -571,6 +818,14 @@ class Database:
         )
         return (await cursor.fetchone()) is not None
     
+    async def add_event(self, bot_id: int, event_type: str, description: str) -> None:
+        """Log an admin/system event for the activity feed."""
+        async with self._lock:
+            await self.connection.execute(
+                "INSERT INTO events (bot_id, event_type, description) VALUES (?, ?, ?)",
+                (bot_id, event_type, description))
+            await self.connection.commit()
+
     async def add_admin(self, bot_id: int, user_id: int) -> bool:
         async with self._lock:
             try:
@@ -603,6 +858,181 @@ class Database:
             "SELECT user_id FROM bot_admins WHERE bot_id = ?", (bot_id,)
         )
         return [row[0] for row in await cursor.fetchall()]
+
+    # ---- Phase 2: granular admin permissions ----
+
+    async def is_owner(self, bot_id: int, user_id: int) -> bool:
+        """True if user_id is the bot's registered owner."""
+        try:
+            from bot_registry import bot_registry
+            bot = bot_registry.get_bot(bot_id)
+            if bot:
+                return bot.get("owner_id") == user_id
+        except Exception:
+            pass
+        # Fallback: direct DB lookup (registry may not be loaded, e.g. tests)
+        try:
+            cursor = await self.connection.execute(
+                "SELECT owner_id FROM bots WHERE bot_id = ?", (bot_id,))
+            row = await cursor.fetchone()
+            return bool(row) and row[0] == user_id
+        except Exception:
+            return False
+
+    async def get_admin_permissions(self, bot_id: int, user_id: int) -> Optional[List[str]]:
+        """Permission list for an extra admin, or None for legacy (full) admins."""
+        cursor = await self.connection.execute(
+            "SELECT permissions FROM bot_admins WHERE bot_id = ? AND user_id = ?",
+            (bot_id, user_id))
+        row = await cursor.fetchone()
+        if not row:
+            return None
+        raw = row[0]
+        if not raw:
+            return None  # legacy admin: full access (backward compatible)
+        try:
+            import json
+            perms = json.loads(raw)
+            return perms if isinstance(perms, list) else None
+        except Exception:
+            return None
+
+    async def set_admin_permissions(self, bot_id: int, user_id: int, permissions: List[str]) -> bool:
+        """Set granular permissions for an extra admin. Owner cannot be restricted."""
+        if await self.is_owner(bot_id, user_id):
+            return False
+        import json
+        async with self._lock:
+            try:
+                await self.connection.execute(
+                    "UPDATE bot_admins SET permissions = ? WHERE bot_id = ? AND user_id = ?",
+                    (json.dumps(permissions), bot_id, user_id))
+                await self.connection.commit()
+                return True
+            except Exception as e:
+                await self.connection.rollback()
+                print(f"Error setting admin permissions: {e}")
+                return False
+
+    async def list_admins_full(self, bot_id: int) -> List[Dict]:
+        """Admins with their permission info (for the management UI)."""
+        import json
+        cursor = await self.connection.execute(
+            "SELECT user_id, permissions, added_at FROM bot_admins WHERE bot_id = ? ORDER BY added_at",
+            (bot_id,))
+        out = []
+        for uid, perms_raw, added in await cursor.fetchall():
+            perms = None
+            if perms_raw:
+                try:
+                    perms = json.loads(perms_raw)
+                except Exception:
+                    perms = None
+            out.append({"user_id": uid, "permissions": perms, "added_at": added,
+                        "legacy": perms is None})
+        return out
+
+    # ---- Phase 2: independent audit log ----
+
+    _SECRET_PATTERNS = None
+
+    @classmethod
+    def _sanitize_audit_text(cls, text: str) -> str:
+        """Strip anything that looks like a bot token / secret from audit text."""
+        import re
+        if not text:
+            return text
+        # Telegram bot token pattern: <digits>:<35 chars>
+        text = re.sub(r"\d{6,}:[A-Za-z0-9_-]{30,}", "[TOKEN REDACTED]", text)
+        return text[:500]
+
+    async def log_audit(self, bot_id: int, admin_id: int, action: str,
+                        target: str = None, success: bool = True,
+                        reason: str = None, summary: str = None) -> bool:
+        """Append-only audit record. Never logs tokens/secrets."""
+        async with self._lock:
+            try:
+                await self.connection.execute(
+                    "INSERT INTO audit_log (bot_id, admin_id, action, target, success, reason, summary) "
+                    "VALUES (?, ?, ?, ?, ?, ?, ?)",
+                    (bot_id, admin_id, action,
+                     self._sanitize_audit_text(str(target)) if target else None,
+                     1 if success else 0,
+                     self._sanitize_audit_text(reason) if reason else None,
+                     self._sanitize_audit_text(summary) if summary else None))
+                await self.connection.commit()
+                return True
+            except Exception as e:
+                await self.connection.rollback()
+                print(f"Error writing audit log: {e}")
+                return False
+
+    async def get_audit_log(self, bot_id: int, admin_id: int = None, action: str = None,
+                            success: int = None, since: str = None,
+                            limit: int = 20, offset: int = 0) -> List[Dict]:
+        q = "SELECT id, admin_id, action, target, created_at, success, reason, summary FROM audit_log WHERE bot_id = ?"
+        params: list = [bot_id]
+        if admin_id is not None:
+            q += " AND admin_id = ?"; params.append(admin_id)
+        if action:
+            q += " AND action = ?"; params.append(action)
+        if success is not None:
+            q += " AND success = ?"; params.append(success)
+        if since:
+            q += " AND created_at >= ?"; params.append(since)
+        q += " ORDER BY id DESC LIMIT ? OFFSET ?"
+        params += [limit, offset]
+        cursor = await self.connection.execute(q, tuple(params))
+        cols = ["id", "admin_id", "action", "target", "created_at", "success", "reason", "summary"]
+        return [dict(zip(cols, r)) for r in await cursor.fetchall()]
+
+    async def count_audit_log(self, bot_id: int, admin_id: int = None, action: str = None,
+                              success: int = None, since: str = None) -> int:
+        q = "SELECT COUNT(*) FROM audit_log WHERE bot_id = ?"
+        params: list = [bot_id]
+        if admin_id is not None:
+            q += " AND admin_id = ?"; params.append(admin_id)
+        if action:
+            q += " AND action = ?"; params.append(action)
+        if success is not None:
+            q += " AND success = ?"; params.append(success)
+        if since:
+            q += " AND created_at >= ?"; params.append(since)
+        cursor = await self.connection.execute(q, tuple(params))
+        return (await cursor.fetchone())[0]
+
+    # ---- Phase 2: backup history ----
+
+    async def record_backup(self, filename: str, size_bytes: int, integrity_ok: bool,
+                            scope: str, note: str = None) -> bool:
+        async with self._lock:
+            try:
+                await self.connection.execute(
+                    "INSERT INTO backups (filename, size_bytes, integrity_ok, scope, note) "
+                    "VALUES (?, ?, ?, ?, ?)",
+                    (filename, size_bytes, 1 if integrity_ok else 0, scope, note))
+                await self.connection.commit()
+                return True
+            except Exception as e:
+                await self.connection.rollback()
+                print(f"Error recording backup: {e}")
+                return False
+
+    async def list_backup_records(self, limit: int = 10) -> List[Dict]:
+        cursor = await self.connection.execute(
+            "SELECT id, filename, created_at, size_bytes, integrity_ok, scope, note "
+            "FROM backups ORDER BY id DESC LIMIT ?", (limit,))
+        cols = ["id", "filename", "created_at", "size_bytes", "integrity_ok", "scope", "note"]
+        return [dict(zip(cols, r)) for r in await cursor.fetchall()]
+
+    async def get_last_good_backup(self) -> Optional[Dict]:
+        cursor = await self.connection.execute(
+            "SELECT filename, created_at, size_bytes FROM backups "
+            "WHERE integrity_ok = 1 ORDER BY id DESC LIMIT 1")
+        row = await cursor.fetchone()
+        if not row:
+            return None
+        return dict(zip(["filename", "created_at", "size_bytes"], row))
     
     # ---- conversation_state: "waiting for a text reply" flows in the admin panel ----
     

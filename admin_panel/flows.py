@@ -169,7 +169,7 @@ async def _broadcast_text(bot_id, chat_id, text, ctx):
     await _send(
         bot_id, chat_id,
         sc.broadcast_confirm(text, user_count),
-        reply_markup=kb.confirm_cancel("adm:bc:go", "adm:bc:no")
+        reply_markup=kb.broadcast_test_menu()
     )
 
 
@@ -334,6 +334,56 @@ async def _vm_visit_url(bot_id, chat_id, text, ctx):
     await router.send_screen(bot_id, chat_id, "verifym")
 
 
+async def _user_search(bot_id, chat_id, text, ctx):
+    """Search bot_users by chat_id or username."""
+    from . import stats as st
+    results = await st.find_user(bot_id, text)
+    await db.clear_conversation_state(chat_id)
+    from . import router
+    if not results:
+        await _send(bot_id, chat_id, sc.user_search_results([]))
+        await router.send_screen(bot_id, chat_id, "users")
+        return
+    if len(results) == 1:
+        # Jump straight to detail
+        await router.send_screen(bot_id, chat_id, "uview:%d" % results[0]["chat_id"])
+        return
+    await _send(bot_id, chat_id, sc.user_search_results(results),
+                reply_markup=kb.user_search_results_menu(results))
+
+
+async def _user_note(bot_id, chat_id, text, ctx):
+    """Save an internal admin note for a user (bot_settings)."""
+    target = ctx.get("target")
+    if not target:
+        await db.clear_conversation_state(chat_id)
+        return
+    if len(text) > 500:
+        await _send(bot_id, chat_id, "الملاحظة طويلة (حد 500 حرف)، حاول تقصيرها.")
+        return
+    await db.set_setting(bot_id, "user_note_%d" % target, text)
+    await db.add_event(bot_id, "admin_action",
+                       "Admin %d added note for user %d" % (chat_id, target))
+    await db.clear_conversation_state(chat_id)
+    from . import router
+    await _send(bot_id, chat_id, "تم حفظ الملاحظة الإدارية")
+    await router.send_screen(bot_id, chat_id, "uview:%d" % target)
+
+
+async def _maintenance_msg(bot_id, chat_id, text, ctx):
+    if len(text) > 1000:
+        await _send(bot_id, chat_id, "\u26a0\ufe0f \u0627\u0644\u0646\u0635 \u0637\u0648\u064a\u0644 \u062c\u062f\u0627\u064b (\u062d\u062f \u0623\u0642\u0635\u0649 1000 \u062d\u0631\u0641).")
+        return
+    await db.set_setting(bot_id, "maintenance_message", text)
+    await db.clear_conversation_state(chat_id)
+    from . import audit as _audit
+    await _audit.log_action(bot_id, chat_id, _audit.A_MAINTENANCE,
+                            success=True, summary="message updated")
+    from . import router
+    await _send(bot_id, chat_id, "\u2705 \u062a\u0645 \u062d\u0641\u0638 \u0631\u0633\u0627\u0644\u0629 \u0627\u0644\u0635\u064a\u0627\u0646\u0629")
+    await router.send_screen(bot_id, chat_id, "maintenance")
+
+
 _HANDLERS = {
     "welcome_edit": _welcome_edit,
     "autoreply_add_keyword": _autoreply_keyword,
@@ -343,6 +393,9 @@ _HANDLERS = {
     "sub_add": _sub_add,
     "sub_check_text": _sub_check_text,
     "broadcast_text": _broadcast_text,
+    "user_search": _user_search,
+    "user_note": _user_note,
+    "maintenance_msg": _maintenance_msg,
     "broadcast_text_quick": _broadcast_text_quick,
     "qr_add_label": _qr_label,
     "qr_add_text": _qr_text,

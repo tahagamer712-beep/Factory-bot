@@ -1,0 +1,44 @@
+# Secrets - NEVER commit
+.env
+*.env
+
+# Databases - contain real user data
+*.db
+*.db-shm
+*.db-wal
+*.sqlite
+*.sqlite3
+
+# Telegram sessions
+*.session
+*.session-journal
+
+# Logs
+*.log
+logs/
+
+# Backups (local only)
+backups/
+*.bak
+*.bak_*
+*.bak_notif
+*.bak_btn
+*.bak_dash
+*.fixbak
+*.fixbak2
+
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Temp
+tmp/
+temp/
+*.tmp

@@ -29,6 +29,8 @@ SETTINGS_DEFAULTS = {
     # التواصل
     
     # المحتوى
+    "maintenance_mode": False,
+    "maintenance_message": None,
     "welcome_message": None,
     "quick_replies": [],
     "transparent_buttons": [],

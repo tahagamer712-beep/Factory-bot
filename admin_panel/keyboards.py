@@ -31,11 +31,14 @@ def _check(flag: bool) -> str:
 
 # ---------------------------------------------------------------- main ----
 
-def main_menu(s: dict = None, factory_username: str = None) -> Dict:
+def main_menu(s: dict = None, factory_username: str = None, pending_reports: int = 0) -> Dict:
     s = s or {}
+    rep_label = f"🚩 البلاغات ({pending_reports})" if pending_reports else "🚩 البلاغات"
     rows = [
         [_btn("⚙️ الإعدادات", "adm:settings"), _btn("📝 المحتوى", "adm:content")],
         [_btn("👥 المستخدمون", "adm:users"), _btn("🔐 الاشتراك", "adm:sub")],
+        [_btn("💬 النشاط الحالي", "adm:convos"), _btn(rep_label, "adm:reports")],
+        [_btn("📊 التحليلات", "adm:analytics"), _btn("🏥 الصحة والإنذارات", "adm:health")],
         [_btn("🚚 التواصل", "adm:contact")],
         [_btn("🌐 النظام والدعم", "adm:system")],
         [
@@ -44,8 +47,6 @@ def main_menu(s: dict = None, factory_username: str = None) -> Dict:
         ],
         [_btn("❓ دليل الاستخدام", "adm:help")],
     ]
-    if factory_username:
-        rows.append([_btn("• لوحة تحكم في بوت السايت •", url=f"https://t.me/{factory_username}")])
     return _kb(rows)
 
 
@@ -313,6 +314,7 @@ def placeholder_menu(back: str) -> Dict:
 
 def users_menu() -> Dict:
     return _kb([
+        [_btn("🔍 بحث عن مستخدم", "adm:usearch")],
         [_btn("👤 المسؤولون", "adm:uadmins"), _btn("📊 الإحصائيات", "adm:ustats")],
         [_btn("⛔ إدارة الحظر", "adm:ublocks")],
         [_btn("📋 سجل النشاط", "adm:uactivity")],
@@ -441,3 +443,182 @@ def sub_gate_kb(channels: list, check_text: str = "✅ تحقق", invite_links: 
         # text, just without a clickable button.
     rows.append([_btn(check_text, f"chk:sub:{user_id}")])
     return _kb(rows)
+
+# ------------------------------------------- command center phase 1 ----
+
+def user_search_results_menu(results: list) -> Dict:
+    rows = []
+    for u in results[:10]:
+        nm = f"@{u['username']}" if u.get("username") else (u.get("first_name") or str(u["chat_id"]))
+        rows.append([_btn(f"👤 {nm}", f"adm:uview:{u['chat_id']}")])
+    rows.append([_btn("• رجوع •", "adm:users")])
+    return _kb(rows)
+
+
+def user_detail_menu(chat_id: int, is_blocked: bool, has_note: bool) -> Dict:
+    block_btn = _btn("✅ رفع الحظر", f"adm:uview:unblock:{chat_id}") if is_blocked else _btn("⛔ حظر", f"adm:uview:block:{chat_id}")
+    rows = [
+        [block_btn, _btn("📝 ملاحظة", f"adm:uview:note:{chat_id}")],
+        [_btn("• رجوع •", "adm:users")],
+    ]
+    return _kb(rows)
+
+
+def reports_menu(counts: dict) -> Dict:
+    rows = [
+        [_btn(f"🆕 جديدة ({counts.get('new', 0)})", "adm:reports:new"),
+         _btn(f"👀 قيد المراجعة ({counts.get('reviewing', 0)})", "adm:reports:reviewing")],
+        [_btn(f"✅ مغلقة ({counts.get('closed', 0)})", "adm:reports:closed")],
+        [_btn("• رجوع •", "adm:main")],
+    ]
+    return _kb(rows)
+
+
+def report_list_menu(reports: list, status: str) -> Dict:
+    rows = []
+    for r in reports[:15]:
+        rows.append([_btn(f"🚩 #{r['id']} — {str(r['reason'] or '')[:25]}", f"adm:report:{r['id']}")])
+    rows.append([_btn("• رجوع •", "adm:reports")])
+    return _kb(rows)
+
+
+def report_detail_menu(rep_id: int, status: str) -> Dict:
+    rows = []
+    if status in ("new", "reviewing"):
+        rows.append([_btn("👀 قيد المراجعة", f"adm:report:reviewing:{rep_id}"),
+                     _btn("✅ تجاهل", f"adm:report:decide:ignored:{rep_id}")])
+        rows.append([_btn("⚠️ تحذير", f"adm:report:decide:warned:{rep_id}"),
+                     _btn("⛔ حظر المُبلَّغ عنه", f"adm:report:decide:blocked:{rep_id}")])
+    rows.append([_btn("• رجوع •", "adm:reports")])
+    return _kb(rows)
+
+
+def broadcast_test_menu() -> Dict:
+    return _kb([
+        [_btn("🧪 اختبار على حسابي", "adm:bc:test")],
+        [_btn("✅ تأكيد الإرسال للجميع", "adm:bc:go")],
+        [_btn("❌ إلغاء", "adm:bc:no")],
+    ])
+
+# ------------------------------------------------------- Phase 2 keyboards --
+
+def backup_menu(records):
+    rows = []
+    rows.append([_btn("💾 إنشاء نسخة الآن", "adm:backup:create")])
+    for r in (records or [])[:5]:
+        mark = "✅" if r["integrity_ok"] else "❌"
+        rows.append([_btn(mark + " " + r["filename"][:30], "adm:backup:verify:%d" % r["id"]),
+                     _btn("↩️ استعادة", "adm:backup:restore:%d" % r["id"])])
+    rows.append([_btn("• رجوع •", "adm:system")])
+    return _kb(rows)
+
+
+def backup_restore_confirm_menu(bid):
+    return _kb([
+        [_btn("✅ تأكيد الاستعادة", "adm:backup:restore:go:%d" % bid)],
+        [_btn("❌ إلغاء", "adm:backup")],
+    ])
+
+
+def audit_menu(page, per_page, total):
+    rows = []
+    nav = []
+    if page > 0:
+        nav.append(_btn("◀ السابق", "adm:audit:page:%d" % (page - 1)))
+    pages = max(1, (total + per_page - 1) // per_page)
+    if page + 1 < pages:
+        nav.append(_btn("التالي ▶", "adm:audit:page:%d" % (page + 1)))
+    if nav:
+        rows.append(nav)
+    rows.append([_btn("• رجوع •", "adm:main")])
+    return _kb(rows)
+
+
+def admin_perms_menu(uid, current):
+    from . import permissions as pm
+    rows = []
+    for perm in pm.ALL_PERMISSIONS:
+        mark = "✅" if perm in current else "❌"
+        rows.append([_btn(mark + " " + pm.label(perm), "adm:uadmins:setperm:%d:%s" % (uid, perm))])
+    rows.append([_btn("📋 قوالب جاهزة:", "adm:noop")])
+    preset_row = []
+    for key, (_, label) in pm.PRESETS.items():
+        preset_row.append(_btn(label, "adm:uadmins:preset:%d:%s" % (uid, key)))
+    if preset_row:
+        rows.append(preset_row)
+    rows.append([_btn("• رجوع •", "adm:uadmins")])
+    return _kb(rows)
+
+
+def system_menu2(info):
+    rows = []
+    rows.append([_btn("💾 مركز النسخ الاحتياطي", "adm:backup")])
+    rows.append([_btn("🔧 وضع الصيانة", "adm:maintenance")])
+    rows.append([_btn("📜 سجل التدقيق", "adm:audit")])
+    rows.append([_btn("🔄 آخر التحديثات", "adm:system:updates")])
+    rows.append([_btn("• رجوع •", "adm:main")])
+    return _kb(rows)
+
+
+def maintenance_menu(s):
+    on = bool(s.get("maintenance_mode"))
+    rows = []
+    rows.append([_btn("🟠 إيقاف الصيانة" if on else "🟢 تفعيل الصيانة",
+                     "adm:maintenance:toggle")])
+    rows.append([_btn("💬 تعديل رسالة الصيانة", "adm:maintenance:msg")])
+    rows.append([_btn("• رجوع •", "adm:system")])
+    return _kb(rows)
+
+def admins_menu2(admins, offset=0):
+    rows = []
+    for a in admins:
+        uid = a["user_id"]
+        badge = "👑" if a["legacy"] else "🔑"
+        rows.append([_btn("%s %d" % (badge, uid), "adm:uadmin:perms:%d" % uid),
+                     _btn("🗑", "adm:uadmins:del:%d" % uid)])
+    rows.append([_btn("➕ إضافة مسؤول", "adm:uadmins:add")])
+    rows.append([_btn("• رجوع •", "adm:users")])
+    return _kb(rows)
+
+
+# ================= Phase 3: analytics / health / alerts =================
+
+def analytics_kb() -> Dict:
+    return _kb([
+        [_btn("📤 تصدير تقرير نصي", "adm:analytics:export")],
+        [_btn("• رجوع •", "adm:main")],
+    ])
+
+
+def health_kb(open_alerts: int = 0) -> Dict:
+    label = f"🚨 الإنذارات ({open_alerts})" if open_alerts else "🚨 الإنذارات"
+    return _kb([
+        [_btn(label, "adm:alerts"), _btn("📢 سجل الإذاعات", "adm:bchistory")],
+        [_btn("🔍 فحص الصحة الآن", "adm:health:check")],
+        [_btn("• رجوع •", "adm:main")],
+    ])
+
+
+def alerts_kb(alerts: list) -> Dict:
+    rows = []
+    for al in alerts[:10]:
+        icon = {"critical": "🔴", "warning": "🟡", "info": "🔵"}.get(al["severity"], "⚪")
+        rows.append([_btn(f"{icon} #{al['id']}", f"adm:alert:{al['id']}")])
+    rows.append([_btn("• رجوع •", "adm:health")])
+    return _kb(rows)
+
+
+def alert_detail_kb(alert_id: int, status: str) -> Dict:
+    rows = []
+    if status == "new":
+        rows.append([_btn("👁 إقرار", f"adm:alertack:{alert_id}")])
+    if status in ("new", "ack"):
+        rows.append([_btn("✅ حلّ", f"adm:alertresolve:{alert_id}")])
+    rows.append([_btn("• رجوع •", "adm:alerts")])
+    return _kb(rows)
+
+
+def bchistory_kb() -> Dict:
+    return _kb([
+        [_btn("• رجوع •", "adm:health")],
+    ])

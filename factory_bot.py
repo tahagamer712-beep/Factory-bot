@@ -15,16 +15,30 @@ from bot_registry import bot_registry
 from telegram_adapter import telegram_pool, TelegramAdapter
 from message_sender import message_sender
 
-WELCOME_TEXT = (
-    "بوت صنع سايت الافضل <b>طاها</b>\n\n"
-    "• يمكنك صنع بوتك الان مدفوع ، مجانا .\n"
-    "• قم بصنع بوتك الان بالعديد من المميزات ."
+def welcome_text(first_name=""):
+    name_part = f"أهلًا <b>{first_name}</b> 👋\n\n" if first_name and first_name != "None" else ""
+    return (
+        f"{name_part}"
+        "🏭 <b>مصنع سايت للبوتات</b>\n"
+        "✨ بإشراف <b>طه</b>\n"
+        "\n"
+        "━━━━━━━━━━━━━━━━\n"
+        "🤖 اصنع بوت تيليجرام خاص بك في دقيقة\n"
+        "🎁 البداية مجانية\n"
+        "💡 بدون أي خبرة برمجية\n"
+        "━━━━━━━━━━━━━━━━\n"
+        "\n"
+        "👇 اختر من القائمة بالأسفل:"
 )
 
+# Keep backward-compat constant for any other callers
+WELCOME_TEXT = welcome_text()
+
 NEW_BOT_PROMPT = (
-    "🎯 <b>سايت</b>\n\n"
-    "🔑 ارسل التوكن الخاص بك الان.\n\n"
-    "👇 لا تملك توكن؟ اضغط الزر للشرح خطوة بخطوة."
+    "🎯 <b>إنشاء بوت جديد</b>\n\n"
+    "⚡ <b>الطريقة السريعة:</b> اضغط «فتح BotFather» بالأسفل، أنشئ بوتك بأمر /newbot، ثم انسخ التوكن والصقه هنا.\n\n"
+    "🔑 أو أرسل التوكن مباشرة إذا كان جاهزًا لديك.\n\n"
+    "👇 لا تملك توكن؟ اضغط «كيف احصل على توكن؟» للشرح خطوة بخطوة."
 )
 
 HOW_TO_GET_TOKEN = (
@@ -55,7 +69,13 @@ HOW_TO_MAKE_BOT = (
     "(افتح بوتك الجديد واكتب /start فيه)"
 )
 
-PAID_VERSION = "⭐ <b>النسخة المدفوعة</b>\n\n🚧 قيد التطوير حالياً."
+PAID_VERSION = (
+    "⭐ <b>النسخة المدفوعة</b>\n\n"
+    "━━━━━━━━━━━━━━━━\n"
+    "💡 حاليًا جميع مزايا المصنع <b>مجانية بالكامل</b> — صنع البوتات وإدارتها بلا أي رسوم.\n\n"
+    "🔔 عند إطلاق باقات مدفوعة مستقبلًا سنعلن عنها هنا أولًا.\n"
+    "━━━━━━━━━━━━━━━━"
+)
 
 FACTORY_HELP_TEXT = (
     "📖 <b>مساعدة المصنع</b>\n\n"
@@ -90,6 +110,7 @@ def main_menu_kb():
 
 def new_bot_kb():
     return _kb([
+        [_btn("⚡ فتح BotFather لإنشاء بوت", url="https://t.me/BotFather")],
         [_btn("🔑 كيف احصل على توكن؟", "fac:new:howtoken")],
         [_btn("❓ ما هو التوكن؟", "fac:new:whattoken")],
         [_btn("• رجوع •", "fac:main")],
@@ -156,15 +177,120 @@ async def _bot_info_text_kb(bot_id: int, owner_id: int):
     )
     kb = _kb([
         [_btn(f"فتح @{username} ↗", url=f"https://t.me/{username}")],
+        [_btn("✏️ إدارة البوت", f"fac:manage:{bot_id}")],
         [_btn("🗑 حذف البوت", f"fac:list:del:{bot_id}")],
         [_btn("◀ رجوع", "fac:list")],
     ])
     return text, kb
 
 
-# --------------------------------------------------------------- entry ----
+# ------------------------------------------------------- manage bot ----
 
-async def handle_message(chat_id: int, user_id: int, text: str):
+EDIT_FIELDS = {
+    "name": ("📛 الاسم", 64, "set_managed_bot_name",
+              "📛 <b>تعديل اسم البوت</b>\n\nأرسل الاسم الجديد (حد أقصى 64 حرفًا).\nأرسل /cancel للإلغاء."),
+    "bio": ("ℹ️ البايو", 120, "set_managed_bot_short_description",
+            "ℹ️ <b>تعديل البايو</b>\n\nأرسل البايو الجديد (حد أقصى 120 حرفًا) — يظهر قبل بدء المحادثة.\nأرسل /cancel للإلغاء."),
+    "desc": ("📝 الوصف", 512, "set_managed_bot_description",
+             "📝 <b>تعديل الوصف</b>\n\nأرسل الوصف الجديد (حد أقصى 512 حرفًا) — يظهر في صفحة البوت.\nأرسل /cancel للإلغاء."),
+    "commands": ("⚙️ الأوامر", 0, None,
+                 "⚙️ <b>تعديل الأوامر</b>\n\nأرسل القائمة الجديدة — كل أمر بسطر بهذا الشكل:\n"
+                 "<code>start - بدء البوت</code>\n<code>help - المساعدة</code>\n\nأرسل /cancel للإلغاء."),
+    "photo": ("🖼 الصورة", 0, None,
+              "🖼 <b>تعديل صورة البوت</b>\n\nأرسل الصورة الجديدة كصورة (ليست ملفًا).\nأرسل /cancel للإلغاء."),
+}
+
+
+async def _check_bot_owner(bot_id: int, user_id: int):
+    """Return (username, token) if user owns the bot, else (None, None)."""
+    cursor = await db.connection.execute(
+        "SELECT username, token FROM bots WHERE bot_id = ? AND owner_id = ?",
+        (bot_id, user_id),
+    )
+    row = await cursor.fetchone()
+    if not row:
+        return None, None
+    return row[0], row[1]
+
+
+async def _manage_text_kb(bot_id: int, user_id: int):
+    username, _ = await _check_bot_owner(bot_id, user_id)
+    if not username:
+        return "❌ ما لقيت هذا البوت.", back_kb(f"fac:list")
+    text = (
+        f"✏️ <b>إدارة @{username}</b>\n\n"
+        "👇 اختر ما تريد تعديله:"
+    )
+    kb = _kb([
+        [_btn("📛 الاسم", f"fac:edit:name:{bot_id}"), _btn("ℹ️ البايو", f"fac:edit:bio:{bot_id}")],
+        [_btn("📝 الوصف", f"fac:edit:desc:{bot_id}"), _btn("🖼 الصورة", f"fac:edit:photo:{bot_id}")],
+        [_btn("⚙️ الأوامر", f"fac:edit:commands:{bot_id}")],
+        [_btn("◀ رجوع", f"fac:list:item:{bot_id}")],
+    ])
+    return text, kb
+
+
+async def _apply_text_edit(chat_id: int, user_id: int, bot_id: int, field: str, value: str):
+    """Apply a text edit via Bot API. Returns (ok, message)."""
+    from config import FACTORY_BOT_ID
+    username, token = await _check_bot_owner(bot_id, user_id)
+    if not token:
+        return False, "❌ ما لقيت هذا البوت أو ما تملكه."
+    label, limit, method, _ = EDIT_FIELDS[field]
+    if limit and len(value) > limit:
+        return False, f"⚠️ النص أطول من الحد ({limit} حرف). اختصره وحاول مجددًا."
+    if not value.strip():
+        return False, "⚠️ النص فارغ. أرسل نصًا صحيحًا أو /cancel للإلغاء."
+
+    bot = bot_registry.get_bot(FACTORY_BOT_ID)
+    adapter = await telegram_pool.get_adapter(bot["token"]) if bot else TelegramAdapter(token)
+
+    if field == "commands":
+        cmds = []
+        for line in value.strip().split("\n"):
+            line = line.strip().lstrip("/").strip()
+            if not line or "-" not in line:
+                continue
+            cmd, _, desc = line.partition("-")
+            cmd, desc = cmd.strip(), desc.strip()
+            if cmd and desc and len(cmd) <= 32:
+                cmds.append({"command": cmd, "description": desc[:256]})
+        if not cmds:
+            return False, "⚠️ ما لقيت أوامر صحيحة. الصيغة: <code>start - بدء البوت</code> بسطر لكل أمر."
+        result = await adapter.bot_api_call(token, "setMyCommands", {"commands": cmds})
+    else:
+        api = getattr(adapter, method)
+        result = await api(token, value.strip())
+
+    if result.get("ok"):
+        await db.add_log("info", "factory", f"Bot edit @{username} #{bot_id}: {field} by {user_id}")
+        return True, f"✅ تم تعديل {label} لبوت @{username} بنجاح."
+    desc = result.get("description", result.get("error", "خطأ غير معروف"))
+    return False, f"❌ فشل التعديل: {desc}\nحاول مجددًا أو أرسل /cancel."
+
+
+async def _apply_photo_edit(chat_id: int, user_id: int, bot_id: int, photo_file_id: str):
+    from config import FACTORY_BOT_ID
+    username, token = await _check_bot_owner(bot_id, user_id)
+    if not token:
+        return False, "❌ ما لقيت هذا البوت أو ما تملكه."
+    bot = bot_registry.get_bot(FACTORY_BOT_ID)
+    adapter = await telegram_pool.get_adapter(bot["token"]) if bot else TelegramAdapter(token)
+    photo_bytes = await adapter.download_managed_file(token, photo_file_id)
+    if not photo_bytes:
+        return False, "❌ تعذر تحميل الصورة. حاول إرسالها مجددًا."
+    if len(photo_bytes) > 5 * 1024 * 1024:
+        return False, "⚠️ الصورة كبيرة (الحد 5MB)."
+    result = await adapter.set_managed_bot_photo(token, photo_bytes)
+    if result.get("ok"):
+        await db.add_log("info", "factory", f"Bot edit @{username} #{bot_id}: photo by {user_id}")
+        return True, f"✅ تم تعديل صورة بوت @{username} بنجاح."
+    desc = result.get("description", result.get("error", "خطأ غير معروف"))
+    return False, f"❌ فشل تعديل الصورة: {desc}"
+
+
+# --------------------------------------------------------------- entry ----
+async def handle_message(chat_id: int, user_id: int, text: str, first_name: str = "", photo_file_id: str = None):
     from admin_panel.flows import handle_text as admin_flow_handle_text
     from config import FACTORY_BOT_ID
     from factory_admin.auth import is_factory_admin
@@ -175,7 +301,7 @@ async def handle_message(chat_id: int, user_id: int, text: str):
         import factory_admin.router as fa_router
         if text.strip() == "/start":
             await db.clear_conversation_state(chat_id)
-            await _send(chat_id, WELCOME_TEXT, main_menu_kb())
+            await _send(chat_id, welcome_text(first_name), main_menu_kb())
             await fa_router.send_screen(chat_id, "main")
             return
         if text.strip() == "/admin":
@@ -206,7 +332,31 @@ async def handle_message(chat_id: int, user_id: int, text: str):
             return
         await _process_token_submission(chat_id, user_id, text.strip())
         return
-    
+
+    # --- Bot edit states (fac_edit:<field>:<bot_id>) ---
+    if convo and convo["bot_id"] == FACTORY_BOT_ID and convo["state"].startswith("fac_edit:"):
+        parts = convo["state"].split(":")
+        field, bot_id = parts[1], int(parts[2])
+        if text.strip() == "/cancel":
+            await db.clear_conversation_state(chat_id)
+            await _send(chat_id, "❌ تم الإلغاء دون حفظ.", main_menu_kb())
+            return
+        if field == "photo":
+            if photo_file_id:
+                ok, msg = await _apply_photo_edit(chat_id, user_id, bot_id, photo_file_id)
+            else:
+                await _send(chat_id, "⚠️ أرسل الصورة كصورة (ليست ملفًا)، أو /cancel للإلغاء.")
+                return
+        else:
+            ok, msg = await _apply_text_edit(chat_id, user_id, bot_id, field, text)
+            if not ok and msg.startswith("⚠️"):
+                await _send(chat_id, msg)  # validation error -> let user retry
+                return
+        await db.clear_conversation_state(chat_id)
+        text2, kb2 = await _manage_text_kb(bot_id, user_id)
+        await _send(chat_id, msg, kb2)
+        return
+
     is_new = await db.add_factory_user(chat_id, "", "")
     
     if text.strip() == "/start":
@@ -215,14 +365,14 @@ async def handle_message(chat_id: int, user_id: int, text: str):
         from subscription_handler import subscription_handler
         if not await subscription_handler.check_subscription(FACTORY_BOT_ID, chat_id, user_id=user_id):
             return
-        await _send(chat_id, WELCOME_TEXT, main_menu_kb())
+        await _send(chat_id, welcome_text(first_name), main_menu_kb())
         return
 
     if text.strip() == "/help":
         await _send(chat_id, FACTORY_HELP_TEXT)
         return
     
-    await _send(chat_id, WELCOME_TEXT, main_menu_kb())
+    await _send(chat_id, welcome_text(first_name), main_menu_kb())
 
 
 async def _process_token_submission(chat_id: int, user_id: int, token: str):
@@ -312,7 +462,7 @@ async def handle_callback(chat_id: int, message_id: int, user_id: int, callback_
     
     if rest == "main":
         await db.clear_conversation_state(chat_id)
-        await _edit(chat_id, message_id, WELCOME_TEXT, main_menu_kb())
+        await _edit(chat_id, message_id, welcome_text(), main_menu_kb())
         return
     
     if rest == "new":
@@ -357,6 +507,27 @@ async def handle_callback(chat_id: int, message_id: int, user_id: int, callback_
                     _kb([[_btn("🤖 صنع بوت جديد", "fac:new")], [_btn("• رجوع •", "fac:main")]]))
         return
     
+    if rest.startswith("manage:"):
+        bot_id = int(rest.split(":")[-1])
+        text, kb = await _manage_text_kb(bot_id, user_id)
+        await _edit(chat_id, message_id, text, kb)
+        return
+
+    if rest.startswith("edit:"):
+        parts = rest.split(":")
+        field, bot_id = parts[1], int(parts[2])
+        username, _ = await _check_bot_owner(bot_id, user_id)
+        if not username:
+            await _edit(chat_id, message_id, "❌ ما لقيت هذا البوت.", back_kb("fac:list"))
+            return
+        if field not in EDIT_FIELDS:
+            return
+        label, _, _, prompt = EDIT_FIELDS[field]
+        await db.set_conversation_state(chat_id, FACTORY_BOT_ID, f"fac_edit:{field}:{bot_id}", {})
+        await _edit(chat_id, message_id, prompt,
+                    _kb([[_btn("❌ إلغاء", f"fac:manage:{bot_id}")]]))
+        return
+
     if rest == "paid":
         await _edit(chat_id, message_id, PAID_VERSION, back_kb("fac:main"))
         return

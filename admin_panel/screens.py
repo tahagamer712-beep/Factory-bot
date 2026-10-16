@@ -5,17 +5,27 @@ screenshots as closely as possible."""
 
 
 def main_menu(stats: dict) -> str:
-    return (
-        "🎛 <b>لوحة التحكم</b>\n"
-        "————————————\n"
-        "📊 <b>إحصائيات اليوم</b>\n"
-        f"👥 الإجمالي: {stats['total_users']}\n"
-        f"🆕 مستخدمون جدد: {stats['new_users']}\n"
-        f"💬 الرسائل: {stats['messages']}\n"
-        f"🔁 الجلسات: {stats['sessions']}\n"
-        f"⚡ متوسط الاستجابة: {stats['avg_response_ms']}ms\n"
-        f"🕐 آخر نشاط: {stats['last_activity']}"
-    )
+    """Command-center home: all numbers from real DB queries (see stats.command_center_stats)."""
+    lines = [
+        "🎛 <b>مركز القيادة</b>",
+        "————————————",
+        f"👥 إجمالي المستخدمين: <b>{stats['total_users']}</b>",
+        f"🆕 جدد اليوم: <b>{stats['new_today']}</b>",
+        f"💬 نشطون (24h): <b>{stats['active_24h']}</b>",
+        f"🚩 بلاغات معلقة: <b>{stats['pending_reports']}</b>",
+        f"⛔ محظورون: <b>{stats['blocked']}</b>",
+        f"🕐 آخر نشاط: {stats['last_activity']}",
+        "————————————",
+    ]
+    ev = stats.get("recent_events") or []
+    if ev:
+        lines.append("📋 <b>آخر الأحداث:</b>")
+        for etype, desc, ts in ev[:5]:
+            d = (desc or "")[:45]
+            lines.append(f"• {d}")
+    else:
+        lines.append("📋 لا أحداث مسجلة بعد")
+    return "\n".join(lines)
 
 
 def settings_menu() -> str:
@@ -496,3 +506,394 @@ def verify_failed() -> str:
 
 def verify_rejected() -> str:
     return "❌ ما تمت الموافقة على طلبك."
+
+# ------------------------------------------- command center phase 1 ----
+
+def user_search_prompt() -> str:
+    return "🔍 أرسل <b>ID</b> المستخدم أو <b>username</b> (بدون @)، أو /cancel"
+
+
+def user_search_results(results: list) -> str:
+    if not results:
+        return "🔍 ما لقيت مستخدم بهذا المعرف."
+    lines = ["🔍 <b>نتائج البحث:</b>"]
+    for u in results:
+        nm = f"@{u['username']}" if u.get("username") else (u.get("first_name") or "بدون اسم")
+        blk = " ⛔ محظور" if u.get("is_blocked") else ""
+        lines.append(f"• {nm} — <code>{u['chat_id']}</code>{blk}")
+    lines.append("\nاضغط على المستخدم لعرض التفاصيل.")
+    return "\n".join(lines)
+
+
+def user_detail_card(u: dict) -> str:
+    nm = f"@{u['username']}" if u.get("username") else (u.get("first_name") or "بدون اسم")
+    blk = "⛔ محظور" if u.get("is_blocked") else "✅ نشط"
+    lines = [
+        f"👤 <b>{nm}</b>",
+        f"🆔 <code>{u['chat_id']}</code>",
+        f"الحالة: {blk}",
+        f"📅 التسجيل: {u.get('first_seen') or '—'}",
+        f"🕐 آخر نشاط: {u.get('last_active') or '—'}",
+        f"💬 الرسائل: <b>{u.get('msg_count', 0)}</b>",
+        f"🚩 بلاغات ضده: <b>{u.get('reports_against', 0)}</b>",
+    ]
+    note = u.get("admin_note")
+    lines.append(f"📝 ملاحظة: {note}" if note else "📝 لا توجد ملاحظة إدارية")
+    acts = u.get("admin_actions") or []
+    if acts:
+        lines.append("————————————\n🛡 <b>إجراءات المشرف:</b>")
+        for desc, ts in acts[:5]:
+            lines.append(f"• {(desc or '')[:50]}")
+    return "\n".join(lines)
+
+
+def user_note_prompt() -> str:
+    return "📝 أرسل الملاحظة الإدارية (تُحفظ داخليًا ولا يراها المستخدم)، أو /cancel"
+
+
+def active_conversations_menu(convos: list, hours: int) -> str:
+    if not convos:
+        return f"💬 <b>النشاط الحالي</b>\n\nلا يوجد نشاط رسائل خلال آخر {hours} ساعة.\n(يُعرض النشطون فقط — بدون محتوى الرسائل)"
+    lines = [f"💬 <b>النشاط الحالي</b> (آخر {hours} ساعة)\n"]
+    for c in convos:
+        nm = f"@{c['username']}" if c.get("username") else (c.get("first_name") or str(c['chat_id']))
+        lines.append(f"• {nm} — {c['msg_count']} رسالة")
+    lines.append("\n(بدون عرض محتوى الرسائل — خصوصية)")
+    return "\n".join(lines)
+
+
+def reports_menu(counts: dict) -> str:
+    return (
+        "🚩 <b>البلاغات والحماية</b>\n"
+        "————————————\n"
+        f"🆕 جديدة: <b>{counts.get('new', 0)}</b>\n"
+        f"👀 قيد المراجعة: <b>{counts.get('reviewing', 0)}</b>\n"
+        f"✅ مغلقة: <b>{counts.get('closed', 0)}</b>"
+    )
+
+
+def report_detail(r: dict) -> str:
+    status_ar = {"new": "🆕 جديد", "reviewing": "👀 قيد المراجعة", "closed": "✅ مغلق"}.get(r["status"], r["status"])
+    dec_ar = {"ignored": "تجاهل", "warned": "تحذير", "blocked": "حظر", "escalated": "تصعيد"}.get(r.get("decision") or "", "—")
+    return (
+        f"🚩 <b>بلاغ #{r['id']}</b> — {status_ar}\n"
+        "————————————\n"
+        f"👤 المُبلِّغ: <code>{r['reporter_id']}</code>\n"
+        f"🎯 المُبلَّغ عنه: <code>{r['target_id'] or '—'}</code>\n"
+        f"📝 السبب: {r['reason'] or '—'}\n"
+        f"📅 التاريخ: {r['created_at']}\n"
+        f"⚖ القرار: {dec_ar}"
+    )
+
+
+def broadcast_test_sent() -> str:
+    return "✅ أُرسلت نسخة تجريبية إلى حسابك. راجعها ثم أكّد الإرسال للجميع."
+
+
+def broadcast_stats(status: dict) -> str:
+    if not status:
+        return "❌ ما لقيت بيانات الإذاعة."
+    return (
+        f"📣 <b>نتيجة الإذاعة</b>\n"
+        "————————————\n"
+        f"✅ ناجح: <b>{status.get('sent', 0)}</b>\n"
+        f"❌ فاشل: <b>{status.get('failed', 0)}</b>\n"
+        f"⛔ محظور/متعذر: <b>{status.get('blocked', 0)}</b>\n"
+        f"📊 نسبة النجاح: {status.get('success_rate', 0):.1f}%"
+    )
+
+# ------------------------------------------------------- Phase 2 screens --
+
+def backup_center(records, last_good, scope):
+    lines = []
+    lines.append("💾 <b>مركز النسخ الاحتياطي</b>")
+    lines.append("————————————")
+    if last_good:
+        mb = (last_good.get("size_bytes") or 0) / 1024 / 1024
+        lines.append("✅ آخر نسخة سليمة: <code>" + last_good["filename"] + "</code>")
+        lines.append("🕐 " + str(last_good["created_at"]) + " — 📦 %.2f MB" % mb)
+    else:
+        lines.append("⚠️ لا توجد نسخة سليمة مسجلة بعد")
+    lines.append("————————————")
+    if records:
+        lines.append("📋 <b>أحدث النسخ:</b>")
+        for r in records[:5]:
+            mark = "✅" if r["integrity_ok"] else "❌"
+            mb = (r["size_bytes"] or 0) / 1024 / 1024
+            lines.append(mark + " <code>" + r["filename"] + "</code> (%.1fMB)" % mb)
+    else:
+        lines.append("لا نسخ مسجلة بعد")
+    lines.append("————————————")
+    lines.append("📝 " + scope)
+    return "\n".join(lines)
+
+
+def backup_verify_result(filename, report):
+    lines = []
+    lines.append("🔍 <b>فحص النسخة</b>")
+    lines.append("<code>" + filename + "</code>")
+    lines.append("————————————")
+    if report.get("ok"):
+        lines.append("✅ النسخة سليمة وقابلة للاستعادة")
+        lines.append("🔧 سلامة قاعدة البيانات: " + str(report.get("integrity")))
+        tables = report.get("tables", {})
+        total = sum(v for v in tables.values() if isinstance(v, int))
+        lines.append("📊 %d جدول — %d صف إجمالًا" % (len(tables), total))
+    else:
+        lines.append("❌ النسخة غير صالحة للاستعادة")
+        lines.append("السبب: " + str(report.get("error") or report.get("integrity")))
+    return "\n".join(lines)
+
+
+def backup_restore_confirm(bid):
+    return (
+        "⚠️ <b>تأكيد الاستعادة</b>\n"
+        "————————————\n"
+        "سيتم فحص النسخة أولًا في بيئة معزولة، "
+        "ثم دمج صفوفها مع قاعدة البيانات "
+        "الحالية (الصفوف الموجودة لن تُمس).\n\n"
+        "هل أنت متأكد؟"
+    )
+
+
+def audit_log_menu(entries, page, per_page, total):
+    from .audit import action_label
+    lines = []
+    lines.append("📜 <b>سجل التدقيق الإداري</b>")
+    lines.append("————————————")
+    if not entries:
+        lines.append("لا إجراءات مسجلة بعد")
+    for e in entries:
+        mark = "✅" if e["success"] else "❌"
+        tgt = " ← " + str(e["target"]) if e["target"] else ""
+        lines.append(mark + " <b>" + action_label(e["action"]) + "</b>" + tgt)
+        lines.append("   👤 <code>" + str(e["admin_id"]) + "</code> • " + str(e["created_at"]))
+        if e.get("summary"):
+            lines.append("   " + str(e["summary"])[:60])
+    lines.append("————————————")
+    pages = max(1, (total + per_page - 1) // per_page)
+    lines.append("📄 صفحة %d من %d (الإجمالي %d)" % (page + 1, pages, total))
+    return "\n".join(lines)
+
+
+def admin_perms_menu(uid, current):
+    lines = []
+    lines.append("🔑 <b>صلاحيات المشرف</b> <code>" + str(uid) + "</code>")
+    lines.append("————————————")
+    lines.append("اضغط على صلاحية لتفعيلها/تعطيلها:")
+    return "\n".join(lines)
+
+
+def system_status(info):
+    lines = []
+    lines.append("🌐 <b>النظام والصيانة</b>")
+    lines.append("————————————")
+    lines.append("📡 الـpolling: <b>" + str(info.get("polling", "?")) + "</b>")
+    lines.append("⏱ مدة التشغيل: " + str(info.get("uptime", "?")))
+    integ = info.get("db_integrity")
+    if integ == "ok":
+        lines.append("🗄 سلامة قاعدة البيانات: ✅ سليمة")
+    else:
+        lines.append("🗄 سلامة قاعدة البيانات: ❌ " + str(integ))
+    lines.append("💾 حجم قاعدة البيانات: " + str(info.get("db_size_mb", 0)) + "MB")
+    lb = info.get("last_backup")
+    if lb:
+        lines.append("📦 آخر نسخة سليمة: <code>" + str(lb) + "</code>")
+    else:
+        lines.append("📦 آخر نسخة سليمة: لا يوجد")
+    if info.get("maintenance"):
+        lines.append("🔧 وضع الصيانة: 🟠 مفعل")
+    else:
+        lines.append("🔧 وضع الصيانة: 🟢 معطل")
+    return "\n".join(lines)
+
+
+def maintenance_menu(s):
+    on = bool(s.get("maintenance_mode"))
+    msg = s.get("maintenance_message") or "(الرسالة الافتراضية)"
+    lines = []
+    lines.append("🔧 <b>وضع الصيانة</b>")
+    lines.append("————————————")
+    if on:
+        lines.append("الحالة: 🟠 مفعل — المستخدمون العاديون يرون رسالة الصيانة")
+    else:
+        lines.append("الحالة: 🟢 معطل — البوت يعمل طبيعيًا")
+    lines.append("💬 الرسالة الحالية:")
+    lines.append(str(msg))
+    lines.append("————————————")
+    lines.append("⚠️ لوحة الإدارة تبقى متاحة لك دائمًا أثناء الصيانة.")
+    return "\n".join(lines)
+
+
+def maintenance_msg_prompt():
+    return "💬 أرسل نص رسالة الصيانة الجديدة (حد أقصى 1000 حرف)، أو /cancel للإلغاء"
+
+def admins_menu2(admins):
+    from . import permissions as pm
+    lines = []
+    lines.append("👤 <b>المسؤولون والصلاحيات</b>")
+    if not admins:
+        lines.append("ما فيه مسؤولين إضافيين — بس أنت (المالك).")
+    for a in admins:
+        if a["legacy"]:
+            badge = "👑 كاملة"
+        else:
+            badge = pm.describe(a["permissions"])
+        lines.append("• <code>%d</code> — %s" % (a["user_id"], badge))
+    return "\n".join(lines)
+
+
+
+# ================= Phase 3: analytics / health / alerts =================
+
+def analytics_menu(a: dict) -> str:
+    L = []
+    L.append("📊 <b>التحليلات</b>")
+    L.append("————————————")
+    L.append(f"👥 إجمالي المستخدمين: <b>{a['total_users']}</b>")
+    n = a["new"]
+    L.append(f"🆕 جدد اليوم: <b>{n['today']}</b> | 7 أيام: <b>{n['d7']}</b> | 30 يومًا: <b>{n['d30']}</b>")
+    L.append(f"💬 نشطون (24h): <b>{a['active_24h']}</b> | (7d): <b>{a['active_7d']}</b>")
+    L.append("<i>النشاط = آخر ظهور للمستخدم ضمن الفترة</i>")
+    L.append("————————————")
+    g = a.get("growth_pct")
+    if g is None:
+        L.append("📈 الاكتساب (7d مقابل السابقة): <b>لا أساس للمقارنة بعد</b>")
+    else:
+        arrow = "🔼" if g > 0 else ("🔽" if g < 0 else "➖")
+        L.append(f"📈 الاكتساب: {arrow} <b>{g:+.1f}%</b> (الحالية {n['d7']} مقابل السابقة {a['prev7']})")
+    L.append("————————————")
+    ph = a.get("peak_hours")
+    if ph:
+        parts = "، ".join(f"{h:02d}:00 ({c})" for h, c in ph)
+        L.append(f"⏰ أكثر الأوقات نشاطًا: {parts}")
+    else:
+        L.append("⏰ أكثر الأوقات نشاطًا: البيانات غير متاحة (تحتاج 20 رسالة على الأقل)")
+    L.append("————————————")
+    if a.get("reports_open") is None:
+        L.append("🚩 البلاغات: البيانات غير متاحة")
+    else:
+        avg = a.get("reports_avg_hours")
+        avg_s = f"{avg}h" if avg is not None else "لا يوجد محلول بعد"
+        L.append(f"🚩 البلاغات: مفتوحة <b>{a['reports_open']}</b> | مغلقة <b>{a['reports_closed']}</b> | متوسط المعالجة: {avg_s}")
+    L.append("————————————")
+    bl = a.get("bc_last")
+    if bl is None:
+        L.append("📢 الإذاعات: لا يوجد بعد")
+    else:
+        st = bl["stats"] or {}
+        if bl["status"] == "completed":
+            L.append(f"📢 آخر إذاعة: ناجح {st.get('sent', '?')} | فاشل {st.get('failed', '?')} "
+                     f"(دائم {st.get('failed_perm', '?')}) | محظورون {st.get('blocked', '?')}")
+        else:
+            L.append(f"📢 آخر إذاعة: الحالة {bl['status']}")
+    L.append(f"⚠️ أخطاء (24h): <b>{a['errors_24h']}</b> | 💾 نسخ: <b>{a['backups_total']}</b>")
+    L.append("————————————")
+    L.append("<i>كل الأرقام من استعلامات فعلية بتوقيت بغداد</i>")
+    return "\n".join(L)
+
+
+def analytics_export_text(a: dict, bot_username: str) -> str:
+    """Short text report - no heavy dependencies."""
+    n = a["new"]
+    lines = [
+        f"تقرير تحليلات @{bot_username}",
+        f"المستخدمون: {a['total_users']} (جدد اليوم {n['today']} / 7d {n['d7']} / 30d {n['d30']})",
+        f"نشطون: 24h={a['active_24h']} 7d={a['active_7d']}",
+        f"الرسائل: {a['msg_total']} | أخطاء 24h: {a['errors_24h']}",
+    ]
+    g = a.get("growth_pct")
+    lines.append(f"نمو الاكتساب: {'لا أساس' if g is None else f'{g:+.1f}%'}")
+    if a.get("reports_open") is not None:
+        lines.append(f"بلاغات مفتوحة: {a['reports_open']} مغلقة: {a['reports_closed']}")
+    if a.get("bc_last"):
+        st = a["bc_last"]["stats"] or {}
+        lines.append(f"آخر إذاعة: {a['bc_last']['status']} (ناجح {st.get('sent', '?')})")
+    return "\n".join(lines)
+
+
+def health_center(info: dict) -> str:
+    from admin_panel.health import HEALTH_LABEL
+    L = []
+    L.append("🏥 <b>مركز صحة النظام</b>")
+    L.append("————————————")
+    L.append(f"الحالة العامة: <b>{HEALTH_LABEL.get(info.get('health'), '؟')}</b>")
+    L.append(f"📡 الـpolling: <b>{info.get('polling', '?')}</b>")
+    lp = info.get("last_poll_ago")
+    L.append(f"🕐 آخر تحديث ناجح: {lp if lp else 'غير معروف'}")
+    L.append(f"⏱ مدة التشغيل: {info.get('uptime', '?')}")
+    L.append("————————————")
+    integ = info.get("db_integrity")
+    L.append("🗄 سلامة DB: " + ("✅ سليمة" if integ == "ok" else f"❌ {integ}"))
+    L.append(f"💾 حجم DB: {info.get('db_size_mb', '?')}MB")
+    lb = info.get("last_backup")
+    L.append(f"📦 آخر نسخة: {lb if lb else 'لا يوجد'}")
+    L.append("————————————")
+    al = info.get("open_alerts", {})
+    L.append(f"🚨 تنبيهات مفتوحة: 🔴 {al.get('critical', 0)} 🟡 {al.get('warning', 0)} 🔵 {al.get('info', 0)}")
+    L.append(f"⏳ مهام عالقة: <b>{info.get('stuck_jobs', 0)}</b>")
+    L.append(f"📢 إذاعات قيد التنفيذ: <b>{info.get('running_broadcasts', 0)}</b>")
+    L.append("————————————")
+    le = info.get("last_error")
+    if le:
+        L.append(f"⚠️ آخر خطأ: {(le[0] or '')[:60]}")
+        L.append(f"   وقتها: {le[1][:16] if le[1] else '?'}")
+    else:
+        L.append("✅ لا أخطاء حديثة")
+    m = info.get("maintenance")
+    L.append(f"🔧 الصيانة: {'🟠 مفعلة' if m else '🟢 معطلة'}")
+    return "\n".join(L)
+
+
+def alerts_menu(alerts: list) -> str:
+    L = ["🚨 <b>الإنذارات</b>", "————————————"]
+    if not alerts:
+        L.append("✅ لا توجد إنذارات مفتوحة")
+        return "\n".join(L)
+    sev_icon = {"critical": "🔴", "warning": "🟡", "info": "🔵"}
+    st_icon = {"new": "🆕", "ack": "👁"}
+    for al in alerts[:10]:
+        L.append(f"{sev_icon.get(al['severity'], '⚪')} {st_icon.get(al['status'], '')} "
+                 f"<b>{al['title'][:50]}</b>")
+        L.append(f"   رصد: {(al['detected_at'] or '')[:16]}")
+    L.append("————————————")
+    L.append("<i>اضغط على إنذار للإقرار أو الحل</i>")
+    return "\n".join(L)
+
+
+def alert_detail(al: dict) -> str:
+    sev_icon = {"critical": "🔴", "warning": "🟡", "info": "🔵"}
+    L = [f"{sev_icon.get(al['severity'], '⚪')} <b>{al['title']}</b>", "————————————"]
+    if al.get("detail"):
+        L.append(al["detail"][:300])
+        L.append("————————————")
+    L.append(f"النوع: {al['alert_type']}")
+    L.append(f"الرصد: {(al['detected_at'] or '')[:16]} | آخر ظهور: {(al['last_seen'] or '')[:16]}")
+    L.append(f"الحالة: {al['status']}")
+    if al.get("ack_by"):
+        L.append(f"أقرّها: {al['ack_by']}")
+    return "\n".join(L)
+
+
+def broadcast_history_menu(history: list) -> str:
+    L = ["📢 <b>سجل الإذاعات</b>", "————————————"]
+    if not history:
+        L.append("لا توجد إذاعات بعد")
+        return "\n".join(L)
+    import json
+    st_icon = {"completed": "✅", "processing": "⏳", "failed": "❌", "cancelled": "⏹️", "pending": "🕐"}
+    for h in history[:8]:
+        try:
+            st = json.loads(h["data"]) if h.get("data") else {}
+        except Exception:
+            st = {}
+        # completed broadcasts store flat stats; running ones nest under progress
+        s = st.get("progress", st) if isinstance(st, dict) else {}
+        sent = s.get("sent", "?")
+        failed = s.get("failed", "?")
+        L.append(f"{st_icon.get(h['status'], '❓')} #{h['job_id']} — {h['status']}: "
+                 f"ناجح {sent} / فاشل {failed}")
+        L.append(f"   {(h['created_at'] or '')[:16]}")
+    L.append("————————————")
+    L.append("<i>الإحصاءات التفصيلية تُحفظ عند اكتمال كل إذاعة</i>")
+    return "\n".join(L)

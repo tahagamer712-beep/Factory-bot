@@ -78,7 +78,7 @@ class MessageHandler:
         
         if command == "/start":
             welcome = await db.get_setting(bot_id, "welcome_message") or \
-                "👋 مرحباً بك في البوت!\n\nأرسل رسالة أو استخدم /help"
+                "👋 <b>أهلاً بك!</b>\n""\n""━━━━━━━━━━━━━━━\n""💬 أرسل رسالتك هنا وسأرد عليك\n""❓ للمساعدة: /help\n""━━━━━━━━━━━━━━━\n""🤖 صُنع عبر <b>مصنع سايت للبوتات</b>"
             reply_markup = await self._transparent_buttons_kb(bot_id)
             await job_queue.add_job(
                 f"cmd_start_{bot_id}_{chat_id}",
